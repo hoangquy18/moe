@@ -2,7 +2,8 @@ import os
 import torch
 from model.vision.vision_encoder import VisionEncoder
 from model.text.text_encoder import TextEncoder
-from model.config import VisionConfig, TextConfig
+from model.mm.mm_encoder import MultiModalEncoder
+from model.config import VisionConfig, TextConfig, MultiModalConfig
 
 
 def build_vision_encoder():
@@ -24,8 +25,11 @@ def build_text_encoder():
 
     return text_encoder
 
-def build_multimodal():
+def build_model():
     vision_encoder = build_vision_encoder()
     text_encoder = build_text_encoder()
     
-    pass
+    multimodal_config = MultiModalConfig()
+    multimodal_encoder = MultiModalEncoder(text_encoder, vision_encoder, multimodal_config)
+    
+    return multimodal_encoder

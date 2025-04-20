@@ -30,7 +30,7 @@ class VisionEncoder(nn.Module):
         self.vision_model = MODEL_CONFIG_CLASSES[vision_type](self.vision_config)
         self.image_processor = CLIPImageProcessor.from_pretrained(config.vision_model_name)
         
-        if config.proj_type:
+        if config.proj_type == "map":
             self.map_head = MultiheadAttentionPoolingHead(self.vision_config)
     
     def feature_extraction(self, 
@@ -59,7 +59,7 @@ class VisionEncoder(nn.Module):
         
         return hidden_states
     
-    def forward(self, image_features, extract_type):
+    def forward(self, image_features, extract_type='patch'):
         
         images_features = self.vision_model(image_features)
         images_features = self.feature_extraction(images_features, extract_type)

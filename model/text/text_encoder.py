@@ -16,19 +16,12 @@ class TextEncoder(nn.Module):
         self.text_config = AutoConfig.from_pretrained(config.text_model_name)
         self.text_model = AutoModel.from_pretrained(config.text_model_name, config=self.text_config)
         
-        if config.proj_type:
+        if config.proj_type == "map":
             self.map_head = MultiheadAttentionPoolingHead(self.text_config)
     
     def feature_extraction(self, 
                            hidden_states: torch.Tensor,
                            extract_type: Literal["patch", "cls_patch", "cls", 'map','gap']) -> torch.Tensor:
-        """
-        Extract features from the image.
-        Args:
-            pixel_values: The input image tensor.
-        Returns:
-            The extracted features.
-        """
         
         if extract_type == 'patch':
             hidden_states = hidden_states[:, 1:]
