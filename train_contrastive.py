@@ -11,6 +11,7 @@ from datasets import load_dataset
 import json
 from PIL import Image
 from torchvision import transforms
+from data.contrastive_dataloader import ContrastiveJsonDataset
 
 
 def parse_args():
@@ -102,6 +103,19 @@ def parse_args():
     )
     parser.add_argument(
         "--local_rank", type=int, default=-1, help="Local rank for distributed training"
+    )
+
+    # Contrastive learning arguments
+    parser.add_argument(
+        "--use_controlled_negatives",
+        action="store_true",
+        help="Use controlled negative pairs in contrastive training",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed for reproducibility"
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=4, help="Number of workers for data loading"
     )
 
     return parser.parse_args()
@@ -246,46 +260,37 @@ def main():
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # Set seed for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
     # Build model
     model = build_model()
 
     # Initialize tokenizer from text encoder config
     tokenizer = AutoTokenizer.from_pretrained(model.text_encoder.config.text_model_name)
 
-    # Load dataset
-    logger.info(f"Loading dataset: {args.dataset_name}")
-    # dataset = load_dataset(args.dataset_name)
-
-    # Split dataset into train and validation
-    # if "validation" in dataset:
-    #     train_dataset = dataset["train"]
-    #     val_dataset = dataset["validation"]
-    # else:
-    #     # If no validation split is available, use a portion of the training data
-    #     train_val_split = dataset["train"].train_test_split(test_size=0.1)
-    #     train_dataset = train_val_split["train"]
-    #     val_dataset = train_val_split["test"]
-
-    # Create datasets
-    # train_dataset = MultimodalDataset(
-    #     train_dataset, tokenizer, args.image_column, args.caption_column
-    # )
-    # val_dataset = MultimodalDataset(
-    #     val_dataset, tokenizer, args.image_column, args.caption_column
-    # )
-
-    train_dataset = JsonMultimodalDataset(
+    # Create datasets - using our contrastive dataset
+    train_dataset = ContrastiveJsonDataset(
         json_path="moe_dataset/moe_dataset.json",
         tokenizer=tokenizer,
         base_image_path="moe_dataset",
-        max_length=2,
+        max_length=77,  # Set appropriate max length based on model requirements
+        image_key="image_id",  # Ensure this matches your JSON structure
+        caption_key="caption",  # Ensure this matches your JSON structure
     )
 
-    val_dataset = train_dataset
+    val_dataset = (
+        train_dataset  # For demonstration - ideally use a separate validation set
+    )
+
     logger.info(f"Train dataset size: {len(train_dataset)}")
     logger.info(f"Validation dataset size: {len(val_dataset)}")
+    logger.info(
+        f"Unique images in training dataset: {len(train_dataset.unique_image_ids)}"
+    )
 
-    # Initialize trainer
+    # Initialize trainer with new contrastive options
     trainer = ContrastiveTrainer(
         model=model,
         train_dataset=train_dataset,
@@ -305,6 +310,9 @@ def main():
         world_size=world_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         precision=args.precision,
+        num_workers=args.num_workers,
+        use_controlled_negatives=args.use_controlled_negatives,
+        seed=args.seed,
     )
 
     # Start training
