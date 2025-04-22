@@ -11,6 +11,7 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 from torch.amp import autocast, GradScaler
+from data.contrastive_dataloader import create_contrastive_dataloader
 
 try:
     import transformer_engine.pytorch as te
@@ -91,7 +92,7 @@ class ContrastiveTrainer:
             logger.info("Using FP32 precision training")
 
         # Create data loaders
-        self.train_loader = DataLoader(
+        self.train_loader = create_contrastive_dataloader(
             train_dataset,
             batch_size=batch_size,
             shuffle=not use_distributed,
@@ -100,7 +101,7 @@ class ContrastiveTrainer:
         )
 
         if val_dataset:
-            self.val_loader = DataLoader(
+            self.val_loader = create_contrastive_dataloader(
                 val_dataset,
                 batch_size=batch_size,
                 shuffle=False,

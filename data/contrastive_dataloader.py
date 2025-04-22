@@ -8,6 +8,7 @@ import json
 from torchvision import transforms
 from typing import Dict, List, Tuple, Optional, Union, Any
 from collections import defaultdict
+from datasets import Dataset as HFDataset
 
 
 class ContrastiveDataset(Dataset):
@@ -118,6 +119,94 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         encoding["image"] = image
         encoding["raw_caption"] = caption
         encoding["image_id"] = item[self.image_key]
+
+        return encoding
+
+
+class ContrastiveHFDataset(ContrastiveDataset):
+    """Dataset for working with Hugging Face datasets with image-caption pairs"""
+
+    def __init__(
+        self,
+        hf_dataset,
+        tokenizer,
+        max_length=77,
+        transform=None,
+        image_key="images",
+        image_id_key="images_id",
+        caption_key="captions",
+    ):
+        """
+        Args:
+            hf_dataset: Hugging Face dataset containing images, captions, and image IDs
+            tokenizer: Tokenizer for processing captions
+            max_length: Maximum length of tokenized captions
+            transform: Optional transform to apply to images
+            image_key: Key for accessing images in the dataset
+            image_id_key: Key for accessing image IDs in the dataset
+            caption_key: Key for accessing caption text in the dataset
+        """
+        self.dataset = hf_dataset
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.image_key = image_key
+        self.image_id_key = image_id_key
+        self.caption_key = caption_key
+
+        # Default transform if none provided
+        if transform is None:
+            self.transform = transforms.Compose(
+                [
+                    transforms.Resize((224, 224), antialias=True),
+                    transforms.ToTensor(),
+                    transforms.ConvertImageDtype(torch.float32),
+                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+                ]
+            )
+        else:
+            self.transform = transform
+
+        # Create image_id to indices mapping
+        self.image_to_indices = defaultdict(list)
+        for idx in range(len(self.dataset)):
+            image_id = self.dataset[idx][self.image_id_key]
+            self.image_to_indices[image_id].append(idx)
+
+        # Get unique image_ids
+        self.unique_image_ids = list(self.image_to_indices.keys())
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        return self.get_image_text_pair(idx)
+
+    def get_image_text_pair(self, idx):
+        item = self.dataset[idx]
+        image = item[self.image_key]
+        caption = item[self.caption_key]
+        image_id = item[self.image_id_key]
+
+        # Apply transform to image (which is already a PIL image)
+        if self.transform:
+            image = self.transform(image)
+
+        # Tokenize caption
+        encoding = self.tokenizer(
+            caption,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+
+        # Remove batch dimension added by tokenizer
+        encoding = {k: v.squeeze(0) for k, v in encoding.items()}
+
+        # Add image and original caption to encoding
+        encoding["image"] = image
+        encoding["raw_caption"] = caption
+        encoding["image_id"] = image_id
 
         return encoding
 
