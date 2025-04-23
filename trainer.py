@@ -127,6 +127,7 @@ class ContrastiveTrainer:
             self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
 
+        self.loss_fn_name = loss_fn.lower()
         # Initialize loss function
         if loss_fn.lower() == "clip":
             from losses.clip_loss import ClipLoss
@@ -273,9 +274,9 @@ class ContrastiveTrainer:
                     # Calculate loss
                     logit_scale = self.model.logit_scale.exp()
 
-                    if self.loss_fn == "clip":
+                    if self.loss_fn_name == "clip":
                         loss = self.loss_fn(image_features, text_features, logit_scale)
-                    elif self.loss_fn == "siglip":
+                    elif self.loss_fn_name == "siglip":
                         logit_bias = self.model.logit_bias
                         loss = self.loss_fn(
                             image_features,
@@ -321,9 +322,9 @@ class ContrastiveTrainer:
                 # Calculate loss
                 logit_scale = self.model.logit_scale.exp()
 
-                if self.loss_fn == "clip":
+                if self.loss_fn_name == "clip":
                     loss = self.loss_fn(image_features, text_features, logit_scale)
-                elif self.loss_fn == "siglip":
+                elif self.loss_fn_name == "siglip":
                     logit_bias = self.model.logit_bias
                     loss = self.loss_fn(
                         image_features,
@@ -417,11 +418,11 @@ class ContrastiveTrainer:
 
                         # Calculate loss
                         logit_scale = self.model.logit_scale.exp()
-                        if self.loss_fn == "clip":
+                        if self.loss_fn_name == "clip":
                             loss = self.loss_fn(
                                 image_features, text_features, logit_scale
                             )
-                        elif self.loss_fn == "siglip":
+                        elif self.loss_fn_name == "siglip":
                             logit_bias = self.model.logit_bias
                             loss = self.loss_fn(
                                 image_features,
@@ -440,9 +441,9 @@ class ContrastiveTrainer:
 
                     # Calculate loss
                     logit_scale = self.model.logit_scale.exp()
-                    if self.loss_fn == "clip":
+                    if self.loss_fn_name == "clip":
                         loss = self.loss_fn(image_features, text_features, logit_scale)
-                    elif self.loss_fn == "siglip":
+                    elif self.loss_fn_name == "siglip":
                         logit_bias = self.model.logit_bias
                         loss = self.loss_fn(
                             image_features,
