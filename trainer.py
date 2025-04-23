@@ -24,6 +24,7 @@ from utils.logger_config import logger
 
 
 class ContrastiveTrainer:
+
     def __init__(
         self,
         model,
@@ -46,6 +47,9 @@ class ContrastiveTrainer:
         world_size=1,
         gradient_accumulation_steps=1,
         precision="fp32",  # "fp32", "fp16", or "fp8"
+        num_workers=1,
+        use_controlled_negatives=False,
+        seed=42,
     ):
         self.model = model.to(device)
         self.train_dataset = train_dataset
@@ -64,6 +68,9 @@ class ContrastiveTrainer:
         self.world_size = world_size
         self.gradient_accumulation_steps = max(1, gradient_accumulation_steps)
         self.precision = precision
+        self.num_workers = num_workers
+        self.use_controlled_negatives = use_controlled_negatives
+        self.seed = seed
 
         # Set up mixed precision training
         self.use_amp = precision != "fp32" and device != "cpu"
@@ -96,8 +103,10 @@ class ContrastiveTrainer:
             train_dataset,
             batch_size=batch_size,
             shuffle=not use_distributed,
-            num_workers=1,
+            num_workers=self.num_workers,
             pin_memory=True,
+            use_controlled_negatives=self.use_controlled_negatives,
+            seed=self.seed,
         )
 
         if val_dataset:
@@ -105,8 +114,10 @@ class ContrastiveTrainer:
                 val_dataset,
                 batch_size=batch_size,
                 shuffle=False,
-                num_workers=1,
+                num_workers=self.num_workers,
                 pin_memory=True,
+                use_controlled_negatives=self.use_controlled_negatives,
+                seed=self.seed,
             )
         else:
             self.val_loader = None
@@ -261,7 +272,17 @@ class ContrastiveTrainer:
 
                     # Calculate loss
                     logit_scale = self.model.logit_scale.exp()
-                    loss = self.loss_fn(image_features, text_features, logit_scale)
+
+                    if self.loss_fn == "clip":
+                        loss = self.loss_fn(image_features, text_features, logit_scale)
+                    elif self.loss_fn == "siglip":
+                        logit_bias = self.model.logit_bias
+                        loss = self.loss_fn(
+                            image_features,
+                            text_features,
+                            logit_scale,
+                            logit_bias=logit_bias,
+                        )
 
                 # Scale the loss by gradient accumulation steps
                 loss = loss / self.gradient_accumulation_steps
@@ -299,7 +320,17 @@ class ContrastiveTrainer:
 
                 # Calculate loss
                 logit_scale = self.model.logit_scale.exp()
-                loss = self.loss_fn(image_features, text_features, logit_scale)
+
+                if self.loss_fn == "clip":
+                    loss = self.loss_fn(image_features, text_features, logit_scale)
+                elif self.loss_fn == "siglip":
+                    logit_bias = self.model.logit_bias
+                    loss = self.loss_fn(
+                        image_features,
+                        text_features,
+                        logit_scale,
+                        logit_bias=logit_bias,
+                    )
 
                 # Scale the loss by gradient accumulation steps
                 loss = loss / self.gradient_accumulation_steps
@@ -386,7 +417,18 @@ class ContrastiveTrainer:
 
                         # Calculate loss
                         logit_scale = self.model.logit_scale.exp()
-                        loss = self.loss_fn(image_features, text_features, logit_scale)
+                        if self.loss_fn == "clip":
+                            loss = self.loss_fn(
+                                image_features, text_features, logit_scale
+                            )
+                        elif self.loss_fn == "siglip":
+                            logit_bias = self.model.logit_bias
+                            loss = self.loss_fn(
+                                image_features,
+                                text_features,
+                                logit_scale,
+                                logit_bias=logit_bias,
+                            )
                 else:
                     # Regular FP32 evaluation
                     text_features, image_features = self.model(
@@ -398,7 +440,16 @@ class ContrastiveTrainer:
 
                     # Calculate loss
                     logit_scale = self.model.logit_scale.exp()
-                    loss = self.loss_fn(image_features, text_features, logit_scale)
+                    if self.loss_fn == "clip":
+                        loss = self.loss_fn(image_features, text_features, logit_scale)
+                    elif self.loss_fn == "siglip":
+                        logit_bias = self.model.logit_bias
+                        loss = self.loss_fn(
+                            image_features,
+                            text_features,
+                            logit_scale,
+                            logit_bias=logit_bias,
+                        )
 
                 total_loss += loss.item()
 
