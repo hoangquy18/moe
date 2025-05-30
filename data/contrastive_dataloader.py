@@ -10,6 +10,18 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 from collections import defaultdict
 from datasets import Dataset as HFDataset
 
+try:
+    import clip
+
+    CLIP_AVAILABLE = True
+except ImportError:
+    CLIP_AVAILABLE = False
+    print(
+        "Warning: CLIP not available. Install with 'pip install git+https://github.com/openai/CLIP.git'"
+    )
+
+from text_preprocess import TextNormalize
+
 
 class ContrastiveDataset(Dataset):
     """Base class for contrastive learning datasets that ensures proper image-text pairing"""
@@ -24,6 +36,10 @@ class ContrastiveDataset(Dataset):
         """Returns image and text that form a positive pair"""
         raise NotImplementedError("Subclasses must implement this method")
 
+    def _create_empty_image(self, size=(224, 224)):
+        """Create an empty RGB image as fallback"""
+        return Image.new("RGB", size, color=(128, 128, 128))
+
 
 class ContrastiveJsonDataset(ContrastiveDataset):
     """Dataset for loading image-caption pairs from a JSON file with correct pairing"""
@@ -37,6 +53,8 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         transform=None,
         image_key="image_id",
         caption_key="caption",
+        use_clip_processor=True,
+        preprocess_text=True,
     ):
         """
         Args:
@@ -47,15 +65,27 @@ class ContrastiveJsonDataset(ContrastiveDataset):
             transform: Optional transform to apply to images
             image_key: Key in JSON for image path/identifier
             caption_key: Key in JSON for caption text
+            use_clip_processor: Whether to use CLIP's processor
+            preprocess_text: Whether to apply Vietnamese text preprocessing
         """
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.base_image_path = base_image_path
         self.image_key = image_key
         self.caption_key = caption_key
+        self.use_clip_processor = use_clip_processor
+        self.preprocess_text = preprocess_text
 
-        # Default transform if none provided
-        if transform is None:
+        # Initialize text normalizer for Vietnamese
+        if self.preprocess_text:
+            self.text_normalizer = TextNormalize()
+            self.text_normalizer.createVowelsTable()
+
+        # Initialize CLIP processor if available and requested
+        if self.use_clip_processor and CLIP_AVAILABLE:
+            _, self.clip_preprocess = clip.load("ViT-B/32", device="cpu")
+            self.transform = self.clip_preprocess
+        elif transform is None:
             self.transform = transforms.Compose(
                 [
                     transforms.Resize((224, 224), antialias=True),
@@ -95,13 +125,27 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         image_path = os.path.join(self.base_image_path, item[self.image_key])
         caption = item[self.caption_key]
 
-        # Load image
+        # Preprocess caption if enabled
+        if self.preprocess_text:
+            caption = self.text_normalizer.normalize(caption)
+
+        # Load image with fallback to empty image
         try:
-            image = Image.open(image_path).convert("RGB")
+            if os.path.exists(image_path):
+                image = Image.open(image_path).convert("RGB")
+            else:
+                print(f"Warning: Image not found at {image_path}, using empty image")
+                image = self._create_empty_image()
+
             if self.transform:
                 image = self.transform(image)
         except Exception as e:
-            raise RuntimeError(f"Failed to load image at {image_path}: {e}")
+            print(
+                f"Warning: Failed to load image at {image_path}: {e}, using empty image"
+            )
+            image = self._create_empty_image()
+            if self.transform:
+                image = self.transform(image)
 
         # Tokenize caption
         encoding = self.tokenizer(
@@ -135,6 +179,8 @@ class ContrastiveHFDataset(ContrastiveDataset):
         image_key="images",
         image_id_key="images_id",
         caption_key="captions",
+        use_clip_processor=True,
+        preprocess_text=True,
     ):
         """
         Args:
@@ -145,6 +191,8 @@ class ContrastiveHFDataset(ContrastiveDataset):
             image_key: Key for accessing images in the dataset
             image_id_key: Key for accessing image IDs in the dataset
             caption_key: Key for accessing caption text in the dataset
+            use_clip_processor: Whether to use CLIP's processor
+            preprocess_text: Whether to apply Vietnamese text preprocessing
         """
         self.dataset = hf_dataset
         self.tokenizer = tokenizer
@@ -152,9 +200,19 @@ class ContrastiveHFDataset(ContrastiveDataset):
         self.image_key = image_key
         self.image_id_key = image_id_key
         self.caption_key = caption_key
+        self.use_clip_processor = use_clip_processor
+        self.preprocess_text = preprocess_text
 
-        # Default transform if none provided
-        if transform is None:
+        # Initialize text normalizer for Vietnamese
+        if self.preprocess_text:
+            self.text_normalizer = TextNormalize()
+            self.text_normalizer.createVowelsTable()
+
+        # Initialize CLIP processor if available and requested
+        if self.use_clip_processor and CLIP_AVAILABLE:
+            _, self.clip_preprocess = clip.load("ViT-B/32", device="cpu")
+            self.transform = self.clip_preprocess
+        elif transform is None:
             self.transform = transforms.Compose(
                 [
                     transforms.Resize((224, 224), antialias=True),
@@ -187,9 +245,26 @@ class ContrastiveHFDataset(ContrastiveDataset):
         caption = item[self.caption_key]
         image_id = item[self.image_id_key]
 
-        # Apply transform to image (which is already a PIL image)
-        if self.transform:
-            image = self.transform(image)
+        # Preprocess caption if enabled
+        if self.preprocess_text:
+            caption = self.text_normalizer.normalize(caption)
+
+        # Handle None or missing images
+        if image is None:
+            print(f"Warning: No image found for item {idx}, using empty image")
+            image = self._create_empty_image()
+
+        # Apply transform to image with error handling
+        try:
+            if self.transform:
+                image = self.transform(image)
+        except Exception as e:
+            print(
+                f"Warning: Failed to transform image for item {idx}: {e}, using empty image"
+            )
+            image = self._create_empty_image()
+            if self.transform:
+                image = self.transform(image)
 
         # Tokenize caption
         encoding = self.tokenizer(
