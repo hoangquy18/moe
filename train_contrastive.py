@@ -150,30 +150,24 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model.text_encoder.config.text_model_name)
 
     # Create datasets - using our contrastive dataset
-    full_dataset = ContrastiveJsonDataset(
+    train_dataset = ContrastiveJsonDataset(
         json_path="moe_dataset/moe_dataset.json",
         tokenizer=tokenizer,
         base_image_path="moe_dataset",
-        max_length=77,  # Set appropriate max length based on model requirements
+        max_length=32,  # Set appropriate max length based on model requirements
         image_key="image_id",  # Ensure this matches your JSON structure
         caption_key="caption",  # Ensure this matches your JSON structure
     )
 
-    # Split into train/dev (80:20)
-    from torch.utils.data import random_split
-
-    total_len = len(full_dataset)
-    train_len = int(0.8 * total_len)
-    val_len = total_len - train_len
-    train_dataset, val_dataset = random_split(
-        full_dataset, [train_len, val_len],
-        generator=torch.Generator().manual_seed(args.seed)
+    val_dataset = (
+        train_dataset  # For demonstration - ideally use a separate validation set
     )
 
     logger.info(f"Train dataset size: {len(train_dataset)}")
     logger.info(f"Validation dataset size: {len(val_dataset)}")
-    # Optionally, log unique images in training set if needed
-    # logger.info(f"Unique images in training dataset: {len(train_dataset.dataset.unique_image_ids)}")
+    logger.info(
+        f"Unique images in training dataset: {len(train_dataset.unique_image_ids)}"
+    )
 
     # Initialize trainer with new contrastive options
     trainer = ContrastiveTrainer(
