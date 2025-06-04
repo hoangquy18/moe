@@ -42,8 +42,8 @@ class MultiModalEncoder(nn.Module):
     def initialize_parameters(self):
         nn.init.xavier_uniform_(self.text_projection.weight)
         nn.init.xavier_uniform_(self.vision_projection.weight)
-        nn.init.constant_(self.text_projection.bias)
-        nn.init.constant_(self.vision_projection.bias)
+        nn.init.constant_(self.text_projection.bias, 0)
+        nn.init.constant_(self.vision_projection.bias, 0)
 
         nn.init.normal_(self.text_layernorm.weight, std=0.02)
         nn.init.normal_(self.text_layernorm.bias, std=0.02)
