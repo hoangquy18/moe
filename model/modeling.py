@@ -37,9 +37,9 @@ class MultiheadAttentionPoolingHead(nn.Module):
         nn.init.normal_(self.layernorm.bias, std=0.02)
 
         nn.init.xavier_uniform_(self.mlp.fc1.weight)
-        nn.init.xavier_uniform_(self.mlp.fc1.bias)
+        nn.init.constant_(self.mlp.fc1.bias, 0)
         nn.init.xavier_uniform_(self.mlp.fc2.weight)
-        nn.init.xavier_uniform_(self.mlp.fc2.bias)
+        nn.init.constant_(self.mlp.fc2.bias, 0)
 
     def forward(self, hidden_state):
         batch_size = hidden_state.shape[0]
