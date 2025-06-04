@@ -55,7 +55,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate", type=float, default=1e-4, help="Learning rate"
     )
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
+    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
     parser.add_argument(
         "--scheduler_type",
         type=str,
@@ -158,7 +158,7 @@ def main():
         image_key="image_id",  # Ensure this matches your JSON structure
         caption_key="caption",  # Ensure this matches your JSON structure
     )
-
+    print(train_dataset[0])
     val_dataset = (
         train_dataset  # For demonstration - ideally use a separate validation set
     )

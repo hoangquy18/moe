@@ -32,11 +32,25 @@ class MultiModalEncoder(nn.Module):
             config.hidden_size, eps=config.layer_norm_eps
         )
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        self.logit_bias = nn.Parameter(torch.ones([]) * -10.0)
+        self.logit_bias = nn.Parameter(torch.ones([]) * np.log(-10.0))
 
         self.proj_type = config.proj_type
         if self.proj_type == "map":
             self.map_head = MultiheadAttentionPoolingHead(config)
+        self.initialize_parameters()
+
+    def initialize_parameters(self):
+        nn.init.xavier_uniform_(self.text_projection.weight)
+        nn.init.xavier_uniform_(self.vision_projection.weight)
+        nn.init.xavier_uniform_(self.text_projection.bias)
+        nn.init.xavier_uniform_(self.vision_projection.bias)
+
+        nn.init.normal_(self.text_layernorm.weight, std=0.02)
+        nn.init.normal_(self.text_layernorm.bias, std=0.02)
+        nn.init.normal_(self.vision_layernorm.weight, std=0.02)
+        nn.init.normal_(self.vision_layernorm.bias, std=0.02)
+
+        self.map_head.initialize_parameters()
 
     def project_text_features(self, text_features: torch.Tensor) -> torch.Tensor:
         residual = text_features

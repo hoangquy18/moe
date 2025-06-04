@@ -123,9 +123,23 @@ class ContrastiveTrainer:
             self.val_loader = None
 
         # Initialize optimizer
-        self.optimizer = optim.AdamW(
-            self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
-        )
+        param_optimizer = list(self.model.named_parameters())
+        no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": [
+                    p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+        self.optimizer = optim.AdamW(optimizer_grouped_parameters, lr=learning_rate)
 
         self.loss_fn_name = loss_fn.lower()
         # Initialize loss function
@@ -423,7 +437,7 @@ class ContrastiveTrainer:
                                 image_features, text_features, logit_scale
                             )
                         elif self.loss_fn_name == "siglip":
-                            logit_bias = self.model.logit_bias
+                            logit_bias = self.model.logit_bias.exp()
                             loss = self.loss_fn(
                                 image_features,
                                 text_features,
@@ -444,7 +458,7 @@ class ContrastiveTrainer:
                     if self.loss_fn_name == "clip":
                         loss = self.loss_fn(image_features, text_features, logit_scale)
                     elif self.loss_fn_name == "siglip":
-                        logit_bias = self.model.logit_bias
+                        logit_bias = self.model.logit_bias.exp()
                         loss = self.loss_fn(
                             image_features,
                             text_features,
@@ -482,3 +496,6 @@ class ContrastiveTrainer:
                 self.save_checkpoint(epoch, val_loss, is_best)
 
         logger.info("Training completed!")
+        logger.info(
+            f"Best validation loss: {self.best_val_loss:.4f} at epoch {self.global_step // len(self.train_loader)}"
+        )
