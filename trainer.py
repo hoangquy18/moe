@@ -139,7 +139,7 @@ class ContrastiveTrainer:
                 "weight_decay": 0.0,
             },
         ]
-        self.optimizer = optim.AdamW(optimizer_grouped_parameters, lr=learning_rate)
+        self.optimizer = optim.Adafactor(optimizer_grouped_parameters, lr=learning_rate)
 
         self.loss_fn_name = loss_fn.lower()
         # Initialize loss function
