@@ -20,7 +20,7 @@ class VisionEncoder(nn.Module):
         super().__init__()
 
         self.config = config
-        if "sigclip" in config.vision_model_name:
+        if "siglip" in config.vision_model_name or "sigclip" in config.vision_model_name:
             vision_type = "sigclip"
         elif "clip" in config.vision_model_name:
             vision_type = "clip"
