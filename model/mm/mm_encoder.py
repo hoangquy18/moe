@@ -29,7 +29,7 @@ class MultiModalEncoder(nn.Module):
             config.hidden_size, eps=config.layer_norm_eps
         )
         self.vision_layernorm = nn.LayerNorm(
-            config.hidden_size, eps=config.layer_norm_eps
+            self.vision_encoder.vision_config.hidden_size, eps=config.layer_norm_eps
         )
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.logit_bias = nn.Parameter(torch.zeros([]))
