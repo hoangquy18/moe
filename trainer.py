@@ -291,7 +291,7 @@ class ContrastiveTrainer:
                     if self.loss_fn_name == "clip":
                         loss = self.loss_fn(image_features, text_features, logit_scale)
                     elif self.loss_fn_name == "siglip":
-                        logit_bias = self.model.logit_bias.exp()
+                        logit_bias = self.model.logit_bias
                         loss = self.loss_fn(
                             image_features,
                             text_features,
@@ -339,7 +339,7 @@ class ContrastiveTrainer:
                 if self.loss_fn_name == "clip":
                     loss = self.loss_fn(image_features, text_features, logit_scale)
                 elif self.loss_fn_name == "siglip":
-                    logit_bias = self.model.logit_bias.exp()
+                    logit_bias = self.model.logit_bias
                     loss = self.loss_fn(
                         image_features,
                         text_features,
@@ -437,7 +437,7 @@ class ContrastiveTrainer:
                                 image_features, text_features, logit_scale
                             )
                         elif self.loss_fn_name == "siglip":
-                            logit_bias = self.model.logit_bias.exp()
+                            logit_bias = self.model.logit_bias
                             loss = self.loss_fn(
                                 image_features,
                                 text_features,
@@ -458,7 +458,7 @@ class ContrastiveTrainer:
                     if self.loss_fn_name == "clip":
                         loss = self.loss_fn(image_features, text_features, logit_scale)
                     elif self.loss_fn_name == "siglip":
-                        logit_bias = self.model.logit_bias.exp()
+                        logit_bias = self.model.logit_bias
                         loss = self.loss_fn(
                             image_features,
                             text_features,

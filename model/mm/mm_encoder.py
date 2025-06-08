@@ -32,7 +32,7 @@ class MultiModalEncoder(nn.Module):
             config.hidden_size, eps=config.layer_norm_eps
         )
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        self.logit_bias = nn.Parameter(torch.ones([]) * -10)
+        self.logit_bias = nn.Parameter(torch.zeros([]))
 
         self.proj_type = config.proj_type
         if self.proj_type == "map":
