@@ -31,3 +31,5 @@ class MultiModalConfig:
     layer_norm_eps: float = 1e-5
     hidden_dropout_prob: float = 0.1
     initializer_range: float = 0.02
+    text_frozen: bool = False
+    vision_frozen: bool = False

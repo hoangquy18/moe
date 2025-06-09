@@ -11,6 +11,14 @@ class MultiModalEncoder(nn.Module):
         super(MultiModalEncoder, self).__init__()
         self.text_encoder = text_encoder
         self.vision_encoder = vision_encoder
+
+        if config.text_frozen:
+            for param in self.text_encoder.parameters():
+                param.requires_grad = False
+        if config.vision_frozen:
+            for param in self.vision_encoder.parameters():
+                param.requires_grad = False
+
         self.text_projection = nn.Linear(
             self.text_encoder.text_config.hidden_size, config.hidden_size
         )
