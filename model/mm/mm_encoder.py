@@ -40,7 +40,7 @@ class MultiModalEncoder(nn.Module):
             self.vision_encoder.vision_config.hidden_size, eps=config.layer_norm_eps
         )
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        self.logit_bias = nn.Parameter(torch.zeros([]))
+        self.logit_bias = nn.Parameter(torch.ones([]) * -10)
 
         self.proj_type = config.proj_type
         if self.proj_type == "map":
@@ -58,7 +58,8 @@ class MultiModalEncoder(nn.Module):
         nn.init.normal_(self.vision_layernorm.weight, std=0.02)
         nn.init.normal_(self.vision_layernorm.bias, std=0.02)
 
-        self.map_head.initialize_parameters()
+        if self.proj_type == "map":
+            self.map_head.initialize_parameters()
 
     def project_text_features(self, text_features: torch.Tensor) -> torch.Tensor:
         residual = text_features
