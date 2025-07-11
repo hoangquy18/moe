@@ -21,6 +21,7 @@ class MaskedVisionEncoder(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        self.vision_config = CLIPVisionConfig.from_pretrained(config.vision_model_name)
         self.config = config
         self.mask_ratio = getattr(config, "mask_ratio", 0.4)
         self.mask_strategy = getattr(config, "mask_strategy", "random")
