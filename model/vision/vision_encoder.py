@@ -106,7 +106,7 @@ class MaskedVisionEncoder(nn.Module):
         
         # Initialize the base vision encoder
         self.vision_encoder = VisionEncoder(config)
-        
+        self.vision_config = CLIPVisionConfig.from_pretrained(config.vision_model_name)
         # Initialize projection heads for self-distillation and masking
         if self.use_self_distillation:
             hidden_size = self.vision_encoder.vision_config.hidden_size
