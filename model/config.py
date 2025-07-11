@@ -8,6 +8,13 @@ class VisionConfig:
     proj_type: Literal["patch", "cls_patch", "cls", "map", "gap"] = "patch"
     vision_model_weights: str = "weights/vision/clip/clip-vit-base-patch32.bin"
     load_vision_pretrained: bool = True
+    # Masking configuration
+    mask_ratio: float = 0.4
+    mask_strategy: Literal["random", "block"] = "random"
+    # Self-distillation configuration
+    use_self_distillation: bool = False
+    teacher_momentum: float = 0.999
+    distillation_alpha: float = 0.5
 
 
 @dataclass
