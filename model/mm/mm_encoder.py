@@ -100,9 +100,27 @@ class MultiModalEncoder(nn.Module):
         self,
         text_input_ids,
         image_features,
-        text_token_type_ids=None,
         text_attention_mask=None,
+        text_token_type_ids=None,
+        apply_masking=False,
     ):
+        """Forward pass for the multimodal encoder.
+
+        Args:
+            text_input_ids: The input ids of the text.
+            image_features: The input image tensor.
+            text_attention_mask: The attention mask for the text.
+            text_token_type_ids: The token type ids for the text.
+            apply_masking: Whether to apply masking to image features.
+        """
+        # For handling masked vision encoder case specially
+        if apply_masking and hasattr(self.vision_encoder, "apply_masking"):
+            # This will be handled outside this function in the trainer
+            # to properly integrate the distillation loss
+            raise ValueError(
+                "For masked vision encoding, call vision_encoder directly with apply_masking=True"
+            )
+
         text_features = self.text_encoder(
             input_ids=text_input_ids,
             token_type_ids=text_token_type_ids,

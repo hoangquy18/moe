@@ -97,6 +97,25 @@ def parse_args():
         help="Precision for training (fp32, fp16, or fp8)",
     )
 
+    # Self-distillation and masking arguments
+    parser.add_argument(
+        "--use_masking",
+        action="store_true",
+        help="Use masked vision encoder with self-distillation",
+    )
+    parser.add_argument(
+        "--mask_ratio",
+        type=float,
+        default=0.4,
+        help="Ratio of image tokens to mask",
+    )
+    parser.add_argument(
+        "--distillation_alpha",
+        type=float,
+        default=0.5,
+        help="Weight of distillation loss in the total loss",
+    )
+
     # Distributed training arguments
     parser.add_argument(
         "--distributed", action="store_true", help="Enable distributed training"
@@ -143,8 +162,8 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    # Build model
-    model = build_model()
+    # Build model with masking option if requested
+    model = build_model(use_masking=args.use_masking)
 
     # Initialize tokenizer from text encoder config
     tokenizer = AutoTokenizer.from_pretrained(model.text_encoder.config.text_model_name)
@@ -169,7 +188,7 @@ def main():
         f"Unique images in training dataset: {len(train_dataset.unique_image_ids)}"
     )
 
-    # Initialize trainer with new contrastive options
+    # Initialize trainer with new masking/distillation options
     trainer = ContrastiveTrainer(
         model=model,
         train_dataset=train_dataset,
@@ -192,6 +211,9 @@ def main():
         num_workers=args.num_workers,
         use_controlled_negatives=args.use_controlled_negatives,
         seed=args.seed,
+        use_masking=args.use_masking,
+        mask_ratio=args.mask_ratio,
+        distillation_alpha=args.distillation_alpha,
     )
 
     # Start training
