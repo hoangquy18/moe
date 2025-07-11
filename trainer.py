@@ -307,9 +307,30 @@ class ContrastiveTrainer:
                             token_type_ids=token_type_ids,
                             attention_mask=attention_mask,
                         )
+                        
+                        # Use the mm_encoder for contrastive learning
+                        # First project features to the same space
+                        text_projection = self.model.project_text_features(text_features)
+                        image_projection = self.model.project_image_features(image_features)
+                        
+                        # Then pass through the multimodal encoder
+                        text_image_features = torch.cat((text_projection, image_projection), dim=1)
+                        mm_features = self.model.mm_encoder(text_image_features)
+                        
+                        B, text_len, _ = text_features.size()
+                        mm_images = mm_features[:, text_len:, :]
+                        mm_texts = mm_features[:, :text_len, :]
+                        
+                        mm_images = self.model.feature_extraction(mm_images, self.model.proj_type)
+                        mm_texts = self.model.feature_extraction(mm_texts, self.model.proj_type)
+                        
+                        # Normalize features
+                        mm_images = mm_images / mm_images.norm(dim=1, keepdim=True)
+                        mm_texts = mm_texts / mm_texts.norm(dim=1, keepdim=True)
+                        
                     else:
-                        # Regular forward pass without masking
-                        text_features, image_features = self.model(
+                        # Use enhanced contrastive forward pass with additional info
+                        mm_texts, mm_images, contrastive_info = self.model(
                             text_input_ids=text_input_ids,
                             image_features=images,
                             text_attention_mask=attention_mask,
@@ -321,12 +342,12 @@ class ContrastiveTrainer:
                     logit_scale = self.model.logit_scale.exp()
 
                     if self.loss_fn_name == "clip":
-                        contrastive_loss = self.loss_fn(image_features, text_features, logit_scale)
+                        contrastive_loss = self.loss_fn(mm_images, mm_texts, logit_scale)
                     elif self.loss_fn_name == "siglip":
                         logit_bias = self.model.logit_bias
                         contrastive_loss = self.loss_fn(
-                            image_features,
-                            text_features,
+                            mm_images,
+                            mm_texts,
                             logit_scale,
                             logit_bias=logit_bias,
                         )
