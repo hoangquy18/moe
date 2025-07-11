@@ -191,9 +191,6 @@ class ContrastiveTrainer:
         self.optimizer = optim.Adafactor(
             model.parameters(),
             lr=learning_rate,
-            relative_step=False,
-            scale_parameter=False,
-            warmup_init=False,
         )
 
         self.loss_fn_name = loss_fn.lower()
