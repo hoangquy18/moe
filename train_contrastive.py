@@ -11,6 +11,7 @@ from datasets import load_dataset
 import json
 from PIL import Image
 from torchvision import transforms
+from model.config import VisionConfig
 from data.contrastive_dataloader import ContrastiveJsonDataset
 
 
@@ -112,8 +113,26 @@ def parse_args():
     parser.add_argument(
         "--distillation_alpha",
         type=float,
-        default=0.5,
+        default=1.0,  # α = 1
         help="Weight of distillation loss in the total loss",
+    )
+    parser.add_argument(
+        "--masking_beta",
+        type=float,
+        default=2.0,  # β = 2
+        help="Weight of masking loss in the total loss",
+    )
+    parser.add_argument(
+        "--warmup_epochs",
+        type=float,
+        default=1.4,
+        help="Number of epochs for warmup",
+    )
+    parser.add_argument(
+        "--teacher_momentum_base",
+        type=float,
+        default=0.994,
+        help="Base momentum for teacher EMA",
     )
 
     # Distributed training arguments
@@ -162,8 +181,16 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    # Build model with masking option if requested
-    model = build_model(use_masking=args.use_masking)
+    # Build model with enhanced configurations
+    vision_config = VisionConfig()
+    vision_config.use_self_distillation = args.use_masking
+    vision_config.mask_ratio = args.mask_ratio
+    vision_config.teacher_momentum_base = args.teacher_momentum_base
+    vision_config.teacher_momentum_final = 1.0  # Final value is always 1.0
+    vision_config.distillation_alpha = args.distillation_alpha
+    vision_config.masking_beta = args.masking_beta
+    
+    model = build_model(use_masking=args.use_masking, vision_config=vision_config)
 
     # Initialize tokenizer from text encoder config
     tokenizer = AutoTokenizer.from_pretrained(model.text_encoder.config.text_model_name)
@@ -188,7 +215,7 @@ def main():
         f"Unique images in training dataset: {len(train_dataset.unique_image_ids)}"
     )
 
-    # Initialize trainer with new masking/distillation options
+    # Initialize trainer with new parameters
     trainer = ContrastiveTrainer(
         model=model,
         train_dataset=train_dataset,
@@ -198,8 +225,8 @@ def main():
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         num_epochs=args.num_epochs,
-        warmup_steps=args.warmup_steps,
-        scheduler_type=args.scheduler_type,
+        warmup_epochs=args.warmup_epochs,
+        scheduler_type="custom_linear",  # Use our custom scheduler
         device="cuda" if torch.cuda.is_available() else "cpu",
         checkpoint_dir=args.output_dir,
         save_every=args.save_every,
@@ -214,6 +241,7 @@ def main():
         use_masking=args.use_masking,
         mask_ratio=args.mask_ratio,
         distillation_alpha=args.distillation_alpha,
+        masking_beta=args.masking_beta,
     )
 
     # Start training

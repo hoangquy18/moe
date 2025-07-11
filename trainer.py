@@ -6,6 +6,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
+import math
 from transformers import (
     get_linear_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
@@ -24,8 +25,62 @@ except ImportError:
 from utils.logger_config import logger
 
 
-class ContrastiveTrainer:
+class CustomLinearDecayLR:
+    """
+    Custom learning rate scheduler with linear warmup and linear decay
+    as described in Sec 3.2.
+    """
 
+    def __init__(
+        self,
+        optimizer,
+        warmup_epochs,
+        total_epochs,
+        steps_per_epoch,
+        max_lr=5e-4,
+        min_lr=0,
+        last_epoch=-1,
+    ):
+        self.optimizer = optimizer
+        self.warmup_steps = int(warmup_epochs * steps_per_epoch)
+        self.total_steps = int(total_epochs * steps_per_epoch)
+        self.decay_steps = self.total_steps - self.warmup_steps
+        self.max_lr = max_lr
+        self.min_lr = min_lr
+        self.current_step = last_epoch + 1 if last_epoch >= 0 else 0
+
+    def step(self):
+        """Update learning rate and take a step"""
+        lr = self.get_lr()
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
+        self.current_step += 1
+
+    def get_lr(self):
+        """Calculate learning rate based on current step"""
+        if self.current_step < self.warmup_steps:
+            # Linear warmup for 1.4 epochs up to 5e-4
+            return self.max_lr * (self.current_step / self.warmup_steps)
+        else:
+            # Linear decay down to 0 for the remaining epochs
+            decay_ratio = (self.current_step - self.warmup_steps) / self.decay_steps
+            decay_factor = 1.0 - decay_ratio
+            return self.max_lr * decay_factor
+
+    def get_last_lr(self):
+        """Return the last computed learning rate"""
+        return [self.get_lr()]
+
+    def state_dict(self):
+        """Return the state of the scheduler"""
+        return {"current_step": self.current_step}
+
+    def load_state_dict(self, state_dict):
+        """Load the state of the scheduler"""
+        self.current_step = state_dict["current_step"]
+
+
+class ContrastiveTrainer:
     def __init__(
         self,
         model,
@@ -33,11 +88,11 @@ class ContrastiveTrainer:
         val_dataset=None,
         loss_fn="clip",  # "clip" or "siglip"
         batch_size=32,
-        learning_rate=1e-4,
+        learning_rate=5e-4,  # Set to 5e-4 as specified
         weight_decay=1e-5,
         num_epochs=10,
-        warmup_steps=1000,
-        scheduler_type="linear",  # "linear" or "cosine"
+        warmup_epochs=1.4,  # Warmup for 1.4 epochs
+        scheduler_type="custom_linear",  # Use custom scheduler
         device="cuda" if torch.cuda.is_available() else "cpu",
         checkpoint_dir="checkpoints",
         save_every=1,
@@ -53,7 +108,8 @@ class ContrastiveTrainer:
         seed=42,
         use_masking=False,
         mask_ratio=0.4,
-        distillation_alpha=0.5,
+        distillation_alpha=1.0,  # α = 1
+        masking_beta=2.0,  # β = 2
     ):
         self.model = model.to(device)
         self.train_dataset = train_dataset
@@ -62,7 +118,7 @@ class ContrastiveTrainer:
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.num_epochs = num_epochs
-        self.warmup_steps = warmup_steps
+        self.warmup_steps = warmup_epochs
         self.scheduler_type = scheduler_type
         self.device = device
         self.checkpoint_dir = checkpoint_dir
@@ -78,6 +134,8 @@ class ContrastiveTrainer:
         self.use_masking = use_masking
         self.mask_ratio = mask_ratio
         self.distillation_alpha = distillation_alpha
+        self.masking_beta = masking_beta
+        self.warmup_epochs = warmup_epochs
 
         # Set up mixed precision training
         self.use_amp = precision != "fp32" and device != "cpu"
@@ -129,24 +187,14 @@ class ContrastiveTrainer:
         else:
             self.val_loader = None
 
-        # Initialize optimizer
-        param_optimizer = list(self.model.named_parameters())
-        no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": weight_decay,
-            },
-            {
-                "params": [
-                    p for n, p in param_optimizer if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-        self.optimizer = optim.Adafactor(optimizer_grouped_parameters, lr=learning_rate)
+        # Initialize optimizer - using Adafactor as specified
+        self.optimizer = optim.Adafactor(
+            model.parameters(),
+            lr=learning_rate,
+            relative_step=False,
+            scale_parameter=False,
+            warmup_init=False,
+        )
 
         self.loss_fn_name = loss_fn.lower()
         # Initialize loss function
@@ -169,8 +217,19 @@ class ContrastiveTrainer:
         else:
             raise ValueError(f"Unsupported loss function: {loss_fn}")
 
-        # Initialize learning rate scheduler with warmup
-        self.scheduler = self._get_scheduler()
+        # Initialize custom learning rate scheduler
+        if scheduler_type == "custom_linear":
+            steps_per_epoch = len(self.train_loader)
+            self.scheduler = CustomLinearDecayLR(
+                self.optimizer,
+                warmup_epochs=self.warmup_epochs,
+                total_epochs=num_epochs,
+                steps_per_epoch=steps_per_epoch,
+                max_lr=learning_rate,
+            )
+        # Initialize learning rate scheduler with warmup for other types
+        else:
+            self.scheduler = self._get_scheduler()
 
         # Create checkpoint directory if it doesn't exist
         if not os.path.exists(checkpoint_dir):
@@ -259,6 +318,10 @@ class ContrastiveTrainer:
         num_batches = len(self.train_loader)
         start_time = time.time()
 
+        # Calculate total steps for cosine momentum schedule
+        total_steps = self.num_epochs * num_batches
+        current_step = epoch * num_batches
+
         progress_bar = tqdm(
             self.train_loader,
             desc=f"Epoch {epoch}/{self.num_epochs}",
@@ -269,6 +332,9 @@ class ContrastiveTrainer:
         self.optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(progress_bar):
+            # Calculate current step for schedules
+            step = current_step + batch_idx
+
             # Get data from batch
             text_input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
@@ -289,18 +355,23 @@ class ContrastiveTrainer:
                     if self.use_masking and isinstance(self.model.vision_encoder, MaskedVisionEncoder):
                         # Apply masking during forward pass
                         image_features_result = self.model.vision_encoder(
-                            images, extract_type="patch", apply_masking=True
+                            images, extract_type="patch", apply_masking=True,
+                            step=step, total_steps=total_steps
                         )
                         
                         if isinstance(image_features_result, tuple):
                             # Unpack the result - features and additional info
                             image_features, mask_info = image_features_result
                             distillation_loss = mask_info.get("distillation_loss", 0.0)
+                            masking_loss = mask_info.get("masking_loss", 0.0)
+                            original_features = mask_info.get("original_features", None)
                         else:
                             # If no masking was applied despite the setting
                             image_features = image_features_result
                             distillation_loss = 0.0
-                            
+                            masking_loss = 0.0
+                            original_features = None
+                        
                         # Get text features from the model
                         text_features = self.model.text_encoder(
                             input_ids=text_input_ids,
@@ -308,12 +379,15 @@ class ContrastiveTrainer:
                             attention_mask=attention_mask,
                         )
                         
-                        # Use the mm_encoder for contrastive learning
-                        # First project features to the same space
-                        text_projection = self.model.project_text_features(text_features)
-                        image_projection = self.model.project_image_features(image_features)
+                        # Use multimodal encoder with original features if available
+                        if original_features is not None:
+                            text_projection = self.model.project_text_features(text_features)
+                            image_projection = self.model.project_image_features(original_features)
+                        else:
+                            text_projection = self.model.project_text_features(text_features)
+                            image_projection = self.model.project_image_features(image_features)
                         
-                        # Then pass through the multimodal encoder
+                        # Process through multimodal encoder
                         text_image_features = torch.cat((text_projection, image_projection), dim=1)
                         mm_features = self.model.mm_encoder(text_image_features)
                         
@@ -327,16 +401,17 @@ class ContrastiveTrainer:
                         # Normalize features
                         mm_images = mm_images / mm_images.norm(dim=1, keepdim=True)
                         mm_texts = mm_texts / mm_texts.norm(dim=1, keepdim=True)
-                        
                     else:
-                        # Use enhanced contrastive forward pass with additional info
-                        mm_texts, mm_images, contrastive_info = self.model(
+                        # Regular forward pass without masking
+                        mm_texts, mm_images = self.model(
                             text_input_ids=text_input_ids,
                             image_features=images,
                             text_attention_mask=attention_mask,
                             text_token_type_ids=token_type_ids,
+                            return_embeddings_only=True
                         )
                         distillation_loss = 0.0
+                        masking_loss = 0.0
 
                     # Calculate contrastive loss
                     logit_scale = self.model.logit_scale.exp()
@@ -352,11 +427,12 @@ class ContrastiveTrainer:
                             logit_bias=logit_bias,
                         )
                     
-                    # Combine losses: contrastive loss + distillation loss
+                    # Combine losses with specified weights: α = 1, β = 2
+                    loss = contrastive_loss
                     if distillation_loss > 0:
-                        loss = contrastive_loss + self.distillation_alpha * distillation_loss
-                    else:
-                        loss = contrastive_loss
+                        loss += self.distillation_alpha * distillation_loss  # α * distillation_loss
+                    if masking_loss > 0:
+                        loss += self.masking_beta * masking_loss  # β * masking_loss
 
                 # Scale the loss by gradient accumulation steps
                 loss = loss / self.gradient_accumulation_steps
@@ -378,9 +454,12 @@ class ContrastiveTrainer:
                     self.scaler.update()
                     self.scheduler.step()
                     
-                    # Update teacher model if using self-distillation
-                    if self.use_masking and isinstance(self.model.vision_encoder, MaskedVisionEncoder) and hasattr(self.model.vision_encoder, 'update_teacher'):
-                        self.model.vision_encoder.update_teacher()
+                    # Update teacher model with EMA on cosine schedule
+                    if (
+                        (batch_idx + 1) % self.gradient_accumulation_steps == 0
+                        or batch_idx == num_batches - 1
+                    ) and self.use_masking and isinstance(self.model.vision_encoder, MaskedVisionEncoder):
+                        self.model.vision_encoder.update_teacher(step=step, max_steps=total_steps)
 
                     # Reset gradients
                     self.optimizer.zero_grad()
@@ -400,10 +479,14 @@ class ContrastiveTrainer:
                         # Unpack the result - features and additional info
                         image_features, mask_info = image_features_result
                         distillation_loss = mask_info.get("distillation_loss", 0.0)
+                        masking_loss = mask_info.get("masking_loss", 0.0)
+                        original_features = mask_info.get("original_features", None)
                     else:
                         # If no masking was applied despite the setting
                         image_features = image_features_result
                         distillation_loss = 0.0
+                        masking_loss = 0.0
+                        original_features = None
                         
                     # Get text features from the model
                     text_features = self.model.text_encoder(
@@ -420,6 +503,7 @@ class ContrastiveTrainer:
                         text_token_type_ids=token_type_ids,
                     )
                     distillation_loss = 0.0
+                    masking_loss = 0.0
 
                 # Calculate contrastive loss
                 logit_scale = self.model.logit_scale.exp()
@@ -436,10 +520,11 @@ class ContrastiveTrainer:
                     )
                 
                 # Combine losses: contrastive loss + distillation loss
+                loss = contrastive_loss
                 if distillation_loss > 0:
-                    loss = contrastive_loss + self.distillation_alpha * distillation_loss
-                else:
-                    loss = contrastive_loss
+                    loss += self.distillation_alpha * distillation_loss  # α * distillation_loss
+                if masking_loss > 0:
+                    loss += self.masking_beta * masking_loss  # β * masking_loss
 
                 # Scale the loss by gradient accumulation steps
                 loss = loss / self.gradient_accumulation_steps
@@ -469,7 +554,7 @@ class ContrastiveTrainer:
                     # Update global step only when optimizer step is performed
                     self.global_step += 1
 
-            # For logging, use the unscaled loss value (whether from AMP or not)
+            # For logging, use the unscaled loss value
             batch_loss = loss.item() * self.gradient_accumulation_steps
             epoch_loss += batch_loss
 
@@ -477,10 +562,12 @@ class ContrastiveTrainer:
             if self.use_masking and isinstance(self.model.vision_encoder, MaskedVisionEncoder):
                 progress_bar.set_postfix(
                     {
-                        "train_loss": f"{batch_loss:.4f}",
+                        "total_loss": f"{batch_loss:.4f}",
                         "cont_loss": f"{contrastive_loss.item():.4f}",
-                        "dist_loss": f"{distillation_loss:.4f}" if distillation_loss > 0 else "0.0000",
+                        "dist_loss": f"{(self.distillation_alpha * distillation_loss.item()):.4f}" if distillation_loss > 0 else "0.0000",
+                        "mask_loss": f"{(self.masking_beta * masking_loss.item()):.4f}" if masking_loss > 0 else "0.0000",
                         "lr": f"{self.scheduler.get_last_lr()[0]:.6f}",
+                        "momentum": f"{self.model.vision_encoder.current_momentum.item():.6f}" if hasattr(self.model.vision_encoder, 'current_momentum') else "N/A",
                     }
                 )
             else:

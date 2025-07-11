@@ -13,8 +13,10 @@ class VisionConfig:
     mask_strategy: Literal["random", "block"] = "random"
     # Self-distillation configuration
     use_self_distillation: bool = False
-    teacher_momentum: float = 0.999
-    distillation_alpha: float = 0.5
+    teacher_momentum_base: float = 0.994  # Initial momentum value
+    teacher_momentum_final: float = 1.0   # Final momentum value
+    distillation_alpha: float = 1.0  # α = 1, weight for distillation loss
+    masking_beta: float = 2.0        # β = 2, weight for masking loss
 
 
 @dataclass
