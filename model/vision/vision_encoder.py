@@ -355,7 +355,7 @@ class VisionEncoder(nn.Module):
         self.vision_config = CLIPVisionConfig.from_pretrained(config.vision_model_name)
         self.vision_model = CLIPModel.from_pretrained(
             config.vision_model_name 
-        )
+        ).vision_model
         self.image_processor = CLIPImageProcessor.from_pretrained(
             config.vision_model_name
         )
