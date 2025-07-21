@@ -129,10 +129,17 @@ class MaskedVisionEncoder(nn.Module):
                 self.teacher_model = VisionEncoder(teacher_config)
                 self.teacher_vision_config = CLIPVisionConfig.from_pretrained(config.teacher_model_name)
                 teacher_hidden_size = self.teacher_vision_config.hidden_size
+                
+                # If teacher and student have different hidden sizes, add an adapter layer
+                if teacher_hidden_size != student_hidden_size:
+                    self.teacher_adapter = nn.Linear(teacher_hidden_size, student_hidden_size)
+                else:
+                    self.teacher_adapter = nn.Identity()
             else:
                 # Use the same model architecture for teacher and student
                 self.teacher_model = VisionEncoder(config)
                 teacher_hidden_size = student_hidden_size
+                self.teacher_adapter = nn.Identity()
             
             # Create teacher projection with appropriate hidden size
             self.teacher_projection = ProjectionHead(teacher_hidden_size, student_hidden_size)
@@ -147,6 +154,9 @@ class MaskedVisionEncoder(nn.Module):
                 param.requires_grad = False
             for param in self.teacher_projection.parameters():
                 param.requires_grad = False
+            if hasattr(self, 'teacher_adapter') and not isinstance(self.teacher_adapter, nn.Identity):
+                for param in self.teacher_adapter.parameters():
+                    param.requires_grad = False
                 
             # Register buffer for tracking current momentum value
             self.register_buffer("current_momentum", torch.tensor(self.teacher_momentum_base))
@@ -236,7 +246,11 @@ class MaskedVisionEncoder(nn.Module):
             # Pool over sequence dimension (simple mean pooling)
             teacher_features = torch.mean(teacher_features, dim=1)  # [batch_size, hidden_dim]
         
-        # Process through projection heads - these handle the different hidden sizes
+        # Apply adapter for teacher features if hidden sizes differ
+        if hasattr(self, 'teacher_adapter') and not isinstance(self.teacher_adapter, nn.Identity):
+            teacher_features = self.teacher_adapter(teacher_features)
+        
+        # Process through projection heads
         student_projections = self.student_projection(student_features, is_student=True, step=step, total_steps=total_steps)
         with torch.no_grad():
             teacher_projections = self.teacher_projection(teacher_features, is_student=False, step=step, total_steps=total_steps)
@@ -304,9 +318,9 @@ class MaskedVisionEncoder(nn.Module):
                 original_hidden_states, extract_type
             )
             
-            # Get teacher predictions
+            # Get teacher predictions - handle potential different hidden sizes
             with torch.no_grad():
-                teacher_hidden_states = self.teacher_model.vision_model(image_features).last_hidden_state
+                teacher_hidden_states = self.teacher_model.vision_model(pixel_values=image_features).last_hidden_state
                 teacher_features = self.teacher_model.feature_extraction(
                     teacher_hidden_states, extract_type
                 )
