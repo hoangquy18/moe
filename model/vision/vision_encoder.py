@@ -289,7 +289,7 @@ class MaskedVisionEncoder(nn.Module):
         """
         if apply_masking and self.use_self_distillation:
             # Get original features from student model
-            original_hidden_states = self.vision_encoder.vision_model(image_features)
+            original_hidden_states = self.vision_encoder.vision_model(pixel_values=image_features).last_hidden_state
             
             # Apply masking to hidden states
             masked_hidden_states, mask = self.apply_mask(original_hidden_states.clone())
@@ -393,7 +393,7 @@ class VisionEncoder(nn.Module):
 
     def forward(self, image_features, extract_type="patch"):
 
-        images_features = self.vision_model(image_features)
+        images_features = self.vision_model(pixel_values=image_features).last_hidden_state
         images_features = self.feature_extraction(images_features, extract_type)
 
         return images_features
