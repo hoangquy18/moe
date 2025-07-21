@@ -306,7 +306,7 @@ class MaskedVisionEncoder(nn.Module):
             
             # Get teacher predictions
             with torch.no_grad():
-                teacher_hidden_states = self.teacher_model.vision_model(image_features)
+                teacher_hidden_states = self.teacher_model.vision_model(image_features).last_hidden_state
                 teacher_features = self.teacher_model.feature_extraction(
                     teacher_hidden_states, extract_type
                 )
