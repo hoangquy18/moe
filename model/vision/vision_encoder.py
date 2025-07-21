@@ -8,7 +8,7 @@ from model.activations import ACT2FN
 from model.modeling import MLP, MultiheadAttentionPoolingHead
 from model.vision.clip import CLIPVisionTransformer
 from model.vision.sigclip import SiglipVisionTransformer
-from transformers import CLIPImageProcessor, CLIPVisionConfig
+from transformers import CLIPImageProcessor, CLIPVisionConfig, CLIPModel
 
 MODEL_CONFIG_CLASSES = {
     "clip": CLIPVisionTransformer,
@@ -114,19 +114,33 @@ class MaskedVisionEncoder(nn.Module):
         # Initialize the base vision encoder
         self.vision_encoder = VisionEncoder(config)
         self.vision_config = CLIPVisionConfig.from_pretrained(config.vision_model_name)
+        
         # Initialize projection heads for self-distillation and masking
         if self.use_self_distillation:
-            hidden_size = self.vision_encoder.vision_config.hidden_size
-            self.student_projection = ProjectionHead(hidden_size, hidden_size)
-            self.masking_projection = ProjectionHead(hidden_size, hidden_size)
+            student_hidden_size = self.vision_encoder.vision_config.hidden_size
+            self.student_projection = ProjectionHead(student_hidden_size, student_hidden_size)
+            self.masking_projection = ProjectionHead(student_hidden_size, student_hidden_size)
             
-            # Create a momentum teacher model for self-distillation
-            self.teacher_model = VisionEncoder(config)
-            self.teacher_projection = ProjectionHead(hidden_size, hidden_size)
+            # Create a teacher model that can be different from student
+            if hasattr(config, "teacher_model_name") and config.teacher_model_name:
+                # Use a different model for the teacher
+                teacher_config = config
+                teacher_config.vision_model_name = config.teacher_model_name
+                self.teacher_model = VisionEncoder(teacher_config)
+                self.teacher_vision_config = CLIPVisionConfig.from_pretrained(config.teacher_model_name)
+                teacher_hidden_size = self.teacher_vision_config.hidden_size
+            else:
+                # Use the same model architecture for teacher and student
+                self.teacher_model = VisionEncoder(config)
+                teacher_hidden_size = student_hidden_size
             
-            # Initialize teacher with the same parameters as student
-            self.teacher_model.load_state_dict(self.vision_encoder.state_dict())
-            self.teacher_projection.load_state_dict(self.student_projection.state_dict())
+            # Create teacher projection with appropriate hidden size
+            self.teacher_projection = ProjectionHead(teacher_hidden_size, student_hidden_size)
+            
+            # If using the same model, copy weights from student to teacher
+            if not hasattr(config, "teacher_model_name") or not config.teacher_model_name:
+                self.teacher_model.load_state_dict(self.vision_encoder.state_dict())
+                self.teacher_projection.load_state_dict(self.student_projection.state_dict())
             
             # Freeze the teacher model
             for param in self.teacher_model.parameters():
@@ -222,7 +236,7 @@ class MaskedVisionEncoder(nn.Module):
             # Pool over sequence dimension (simple mean pooling)
             teacher_features = torch.mean(teacher_features, dim=1)  # [batch_size, hidden_dim]
         
-        # Process through projection heads
+        # Process through projection heads - these handle the different hidden sizes
         student_projections = self.student_projection(student_features, is_student=True, step=step, total_steps=total_steps)
         with torch.no_grad():
             teacher_projections = self.teacher_projection(teacher_features, is_student=False, step=step, total_steps=total_steps)
@@ -339,7 +353,9 @@ class VisionEncoder(nn.Module):
             raise ValueError(f"Unknown vision model name: {config.vision_model_name}")
 
         self.vision_config = CLIPVisionConfig.from_pretrained(config.vision_model_name)
-        self.vision_model = MODEL_CONFIG_CLASSES[vision_type](self.vision_config)
+        self.vision_model = CLIPModel.from_pretrained(
+            config.vision_model_name 
+        )
         self.image_processor = CLIPImageProcessor.from_pretrained(
             config.vision_model_name
         )

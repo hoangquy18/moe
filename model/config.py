@@ -13,6 +13,7 @@ class VisionConfig:
     mask_strategy: Literal["random", "block"] = "random"
     # Self-distillation configuration
     use_self_distillation: bool = False
+    teacher_model_name: str = None  # Name of the teacher model (if different from student)
     teacher_momentum_base: float = 0.994  # Initial momentum value
     teacher_momentum_final: float = 1.0   # Final momentum value
     distillation_alpha: float = 1.0  # α = 1, weight for distillation loss

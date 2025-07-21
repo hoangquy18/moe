@@ -111,6 +111,12 @@ def parse_args():
         help="Ratio of image tokens to mask",
     )
     parser.add_argument(
+        "--teacher_model_name",
+        type=str,
+        default=None,
+        help="Name of the Hugging Face model to use as teacher (larger model)",
+    )
+    parser.add_argument(
         "--distillation_alpha",
         type=float,
         default=1.0,  # α = 1
@@ -189,6 +195,11 @@ def main():
     vision_config.teacher_momentum_final = 1.0  # Final value is always 1.0
     vision_config.distillation_alpha = args.distillation_alpha
     vision_config.masking_beta = args.masking_beta
+    
+    # Add teacher model configuration
+    if args.teacher_model_name:
+        vision_config.teacher_model_name = args.teacher_model_name
+        logger.info(f"Using different teacher model: {args.teacher_model_name}")
     
     model = build_model(use_masking=args.use_masking, vision_config=vision_config)
 
