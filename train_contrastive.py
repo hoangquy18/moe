@@ -141,6 +141,25 @@ def parse_args():
         help="Base momentum for teacher EMA",
     )
 
+    # Local crop arguments for self-distillation
+    parser.add_argument(
+        "--use_local_crops",
+        action="store_true",
+        help="Use local crops for self-distillation comparison with teacher",
+    )
+    parser.add_argument(
+        "--num_local_crops",
+        type=int,
+        default=4,
+        help="Number of local crops to generate per image (M)",
+    )
+    parser.add_argument(
+        "--local_crop_size",
+        type=int,
+        default=98,
+        help="Size of each local crop (default: 98x98)",
+    )
+
     # Distributed training arguments
     parser.add_argument(
         "--distributed", action="store_true", help="Enable distributed training"
@@ -195,6 +214,11 @@ def main():
     vision_config.teacher_momentum_final = 1.0  # Final value is always 1.0
     vision_config.distillation_alpha = args.distillation_alpha
     vision_config.masking_beta = args.masking_beta
+    
+    # Add local crop configuration
+    vision_config.use_local_crops = args.use_local_crops
+    vision_config.num_local_crops = args.num_local_crops
+    vision_config.local_crop_size = args.local_crop_size
     
     # Add teacher model configuration
     if args.teacher_model_name:
@@ -253,6 +277,10 @@ def main():
         mask_ratio=args.mask_ratio,
         distillation_alpha=args.distillation_alpha,
         masking_beta=args.masking_beta,
+        # Enable local crop creation in dataloader
+        create_local_crops=args.use_local_crops,
+        num_local_crops=args.num_local_crops,
+        local_crop_size=args.local_crop_size,
     )
 
     # Start training

@@ -18,6 +18,10 @@ class VisionConfig:
     teacher_momentum_final: float = 1.0   # Final momentum value
     distillation_alpha: float = 1.0  # α = 1, weight for distillation loss
     masking_beta: float = 2.0        # β = 2, weight for masking loss
+    # Local crop parameters for self-distillation
+    use_local_crops: bool = True     # Whether to use local crops for self-distillation
+    num_local_crops: int = 4         # Number of local crops to use (M)
+    local_crop_size: int = 98        # Size of local crops (98x98 pixels)
 
 
 @dataclass

@@ -55,6 +55,9 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         caption_key="caption",
         use_clip_processor=True,
         preprocess_text=True,
+        create_local_crops=False,
+        num_local_crops=4,
+        local_crop_size=98,
     ):
         """
         Args:
@@ -67,6 +70,9 @@ class ContrastiveJsonDataset(ContrastiveDataset):
             caption_key: Key in JSON for caption text
             use_clip_processor: Whether to use CLIP's processor
             preprocess_text: Whether to apply Vietnamese text preprocessing
+            create_local_crops: Whether to create local crops for self-distillation
+            num_local_crops: Number of local crops to generate per image
+            local_crop_size: Size of each local crop
         """
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -75,6 +81,9 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         self.caption_key = caption_key
         self.use_clip_processor = use_clip_processor
         self.preprocess_text = preprocess_text
+        self.create_local_crops = create_local_crops
+        self.num_local_crops = num_local_crops
+        self.local_crop_size = local_crop_size
 
         # Initialize text normalizer for Vietnamese
         if self.preprocess_text:
@@ -120,6 +129,47 @@ class ContrastiveJsonDataset(ContrastiveDataset):
     def __getitem__(self, idx):
         return self.get_image_text_pair(idx)
 
+    def create_local_crops_from_image(self, image, num_crops=4, crop_size=98):
+        """
+        Create random local crops from an input PIL image
+
+        Args:
+            image: PIL Image to crop
+            num_crops: Number of local crops to generate
+            crop_size: Size of each local crop (crop_size x crop_size)
+
+        Returns:
+            List of transformed local crops
+        """
+        width, height = image.size
+
+        if height < crop_size or width < crop_size:
+            # If the image is smaller than the crop size, resize it first
+            scale_factor = max(crop_size / height, crop_size / width) * 1.2
+            new_height, new_width = int(height * scale_factor), int(
+                width * scale_factor
+            )
+            image = image.resize((new_width, new_height), Image.LANCZOS)
+            height, width = new_height, new_width
+
+        all_crops = []
+
+        for _ in range(num_crops):
+            # Generate random crop coordinates
+            top = random.randint(0, height - crop_size)
+            left = random.randint(0, width - crop_size)
+
+            # Extract crop
+            crop = image.crop((left, top, left + crop_size, top + crop_size))
+
+            # Apply the same transforms as the main image
+            if self.transform:
+                crop = self.transform(crop)
+
+            all_crops.append(crop)
+
+        return all_crops
+
     def get_image_text_pair(self, idx):
         item = self.samples[idx]
         image_path = os.path.join(self.base_image_path, item[self.image_key])
@@ -133,17 +183,32 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         try:
             if os.path.exists(image_path):
                 image = Image.open(image_path).convert("RGB")
+
+                # Create local crops if enabled
+                local_crops = None
+                if self.create_local_crops:
+                    # Create crops from the original image before applying transforms
+                    local_crops = self.create_local_crops_from_image(
+                        image,
+                        num_crops=self.num_local_crops,
+                        crop_size=self.local_crop_size,
+                    )
+
+                # Apply transform to main image
+                if self.transform:
+                    image = self.transform(image)
             else:
                 print(f"Warning: Image not found at {image_path}, using empty image")
                 image = self._create_empty_image()
-
-            if self.transform:
-                image = self.transform(image)
+                local_crops = None
+                if self.transform:
+                    image = self.transform(image)
         except Exception as e:
             print(
                 f"Warning: Failed to load image at {image_path}: {e}, using empty image"
             )
             image = self._create_empty_image()
+            local_crops = None
             if self.transform:
                 image = self.transform(image)
 
@@ -159,8 +224,10 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         # Remove batch dimension added by tokenizer
         encoding = {k: v.squeeze(0) for k, v in encoding.items()}
 
-        # Add image and original caption to encoding
+        # Add image, local crops, and original caption to encoding
         encoding["image"] = image
+        if local_crops:
+            encoding["local_crops"] = local_crops
         encoding["raw_caption"] = caption
         encoding["image_id"] = item[self.image_key]
 
@@ -181,6 +248,9 @@ class ContrastiveHFDataset(ContrastiveDataset):
         caption_key="captions",
         use_clip_processor=True,
         preprocess_text=True,
+        create_local_crops=False,
+        num_local_crops=4,
+        local_crop_size=98,
     ):
         """
         Args:
@@ -193,6 +263,9 @@ class ContrastiveHFDataset(ContrastiveDataset):
             caption_key: Key for accessing caption text in the dataset
             use_clip_processor: Whether to use CLIP's processor
             preprocess_text: Whether to apply Vietnamese text preprocessing
+            create_local_crops: Whether to create local crops for self-distillation
+            num_local_crops: Number of local crops to generate per image
+            local_crop_size: Size of each local crop
         """
         self.dataset = hf_dataset
         self.tokenizer = tokenizer
@@ -202,6 +275,9 @@ class ContrastiveHFDataset(ContrastiveDataset):
         self.caption_key = caption_key
         self.use_clip_processor = use_clip_processor
         self.preprocess_text = preprocess_text
+        self.create_local_crops = create_local_crops
+        self.num_local_crops = num_local_crops
+        self.local_crop_size = local_crop_size
 
         # Initialize text normalizer for Vietnamese
         if self.preprocess_text:
@@ -239,6 +315,47 @@ class ContrastiveHFDataset(ContrastiveDataset):
     def __getitem__(self, idx):
         return self.get_image_text_pair(idx)
 
+    def create_local_crops_from_image(self, image, num_crops=4, crop_size=98):
+        """
+        Create random local crops from an input PIL image
+
+        Args:
+            image: PIL Image to crop
+            num_crops: Number of local crops to generate
+            crop_size: Size of each local crop (crop_size x crop_size)
+
+        Returns:
+            List of transformed local crops
+        """
+        width, height = image.size
+
+        if height < crop_size or width < crop_size:
+            # If the image is smaller than the crop size, resize it first
+            scale_factor = max(crop_size / height, crop_size / width) * 1.2
+            new_height, new_width = int(height * scale_factor), int(
+                width * scale_factor
+            )
+            image = image.resize((new_width, new_height), Image.LANCZOS)
+            height, width = new_height, new_width
+
+        all_crops = []
+
+        for _ in range(num_crops):
+            # Generate random crop coordinates
+            top = random.randint(0, height - crop_size)
+            left = random.randint(0, width - crop_size)
+
+            # Extract crop
+            crop = image.crop((left, top, left + crop_size, top + crop_size))
+
+            # Apply the same transforms as the main image
+            if self.transform:
+                crop = self.transform(crop)
+
+            all_crops.append(crop)
+
+        return all_crops
+
     def get_image_text_pair(self, idx):
         item = self.dataset[idx]
         image = item[self.image_key]
@@ -250,9 +367,18 @@ class ContrastiveHFDataset(ContrastiveDataset):
             caption = self.text_normalizer.normalize(caption)
 
         # Handle None or missing images
+        local_crops = None
         if image is None:
             print(f"Warning: No image found for item {idx}, using empty image")
             image = self._create_empty_image()
+        else:
+            # Create local crops if enabled
+            if self.create_local_crops:
+                local_crops = self.create_local_crops_from_image(
+                    image,
+                    num_crops=self.num_local_crops,
+                    crop_size=self.local_crop_size,
+                )
 
         # Apply transform to image with error handling
         try:
@@ -263,6 +389,7 @@ class ContrastiveHFDataset(ContrastiveDataset):
                 f"Warning: Failed to transform image for item {idx}: {e}, using empty image"
             )
             image = self._create_empty_image()
+            local_crops = None
             if self.transform:
                 image = self.transform(image)
 
@@ -278,8 +405,10 @@ class ContrastiveHFDataset(ContrastiveDataset):
         # Remove batch dimension added by tokenizer
         encoding = {k: v.squeeze(0) for k, v in encoding.items()}
 
-        # Add image and original caption to encoding
+        # Add image, local crops, and original caption to encoding
         encoding["image"] = image
+        if local_crops:
+            encoding["local_crops"] = local_crops
         encoding["raw_caption"] = caption
         encoding["image_id"] = image_id
 
@@ -376,6 +505,19 @@ class ContrastiveCollator:
         else:
             token_type_ids = None
 
+        # Handle local crops if present
+        has_local_crops = (
+            "local_crops" in batch[0] and batch[0]["local_crops"] is not None
+        )
+        if has_local_crops:
+            # Collect all local crops into a single batch
+            all_local_crops = []
+            for item in batch:
+                all_local_crops.extend(item["local_crops"])
+            local_crops = torch.stack(all_local_crops) if all_local_crops else None
+        else:
+            local_crops = None
+
         # Collect raw captions and image IDs for debugging
         raw_captions = [item.get("raw_caption", "") for item in batch]
         image_ids = [item.get("image_id", "") for item in batch]
@@ -394,6 +536,9 @@ class ContrastiveCollator:
 
         if token_type_ids is not None:
             collated_batch["token_type_ids"] = token_type_ids
+
+        if local_crops is not None:
+            collated_batch["local_crops"] = local_crops
 
         # If using controlled negatives, add indices of deliberate negative pairs
         if self.use_controlled_negatives:
@@ -419,6 +564,9 @@ def create_contrastive_dataloader(
     tokenizer=None,
     use_controlled_negatives: bool = False,
     seed: int = 42,
+    create_local_crops: bool = False,
+    num_local_crops: int = 4,
+    local_crop_size: int = 98,
 ):
     """
     Create a DataLoader for contrastive learning with proper image-text pairing,
@@ -434,10 +582,16 @@ def create_contrastive_dataloader(
         tokenizer: Optional tokenizer for the collator
         use_controlled_negatives: Whether to generate controlled negative pairs
         seed: Random seed for reproducibility
-
-    Returns:
-        DataLoader configured for contrastive learning
+        create_local_crops: Whether to create local crops for self-distillation
+        num_local_crops: Number of local crops to generate per image
+        local_crop_size: Size of each local crop
     """
+    # If the dataset supports local crops, configure it
+    if hasattr(dataset, "create_local_crops"):
+        dataset.create_local_crops = create_local_crops
+        dataset.num_local_crops = num_local_crops
+        dataset.local_crop_size = local_crop_size
+
     # Use the new sampler that ensures unique images per batch
     sampler = UniqueImageBatchSampler(
         dataset=dataset,
