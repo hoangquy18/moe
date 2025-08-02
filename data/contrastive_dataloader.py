@@ -131,7 +131,7 @@ class ContrastiveJsonDataset(ContrastiveDataset):
 
     def create_local_crops_from_image(self, image, num_crops=4, crop_size=98):
         """
-        Create random local crops from an input PIL image
+        Create random local crops from an input PIL image using vectorization
 
         Args:
             image: PIL Image to crop
@@ -152,23 +152,23 @@ class ContrastiveJsonDataset(ContrastiveDataset):
             image = image.resize((new_width, new_height), Image.LANCZOS)
             height, width = new_height, new_width
 
-        all_crops = []
+        # Generate all random crop coordinates at once using numpy
+        top_coords = np.random.randint(0, height - crop_size, size=num_crops)
+        left_coords = np.random.randint(0, width - crop_size, size=num_crops)
 
-        for _ in range(num_crops):
-            # Generate random crop coordinates
-            top = random.randint(0, height - crop_size)
-            left = random.randint(0, width - crop_size)
+        # Create crops using list comprehension (more efficient than explicit loops)
+        crops = [
+            image.crop((left, top, left + crop_size, top + crop_size))
+            for top, left in zip(top_coords, left_coords)
+        ]
 
-            # Extract crop
-            crop = image.crop((left, top, left + crop_size, top + crop_size))
+        # Apply transforms using list comprehension
+        if self.transform:
+            transformed_crops = [self.transform(crop) for crop in crops]
+        else:
+            transformed_crops = crops
 
-            # Apply the same transforms as the main image
-            if self.transform:
-                crop = self.transform(crop)
-
-            all_crops.append(crop)
-
-        return all_crops
+        return transformed_crops
 
     def get_image_text_pair(self, idx):
         item = self.samples[idx]
@@ -317,7 +317,7 @@ class ContrastiveHFDataset(ContrastiveDataset):
 
     def create_local_crops_from_image(self, image, num_crops=4, crop_size=98):
         """
-        Create random local crops from an input PIL image
+        Create random local crops from an input PIL image using vectorization
 
         Args:
             image: PIL Image to crop
@@ -338,23 +338,23 @@ class ContrastiveHFDataset(ContrastiveDataset):
             image = image.resize((new_width, new_height), Image.LANCZOS)
             height, width = new_height, new_width
 
-        all_crops = []
+        # Generate all random crop coordinates at once using numpy
+        top_coords = np.random.randint(0, height - crop_size, size=num_crops)
+        left_coords = np.random.randint(0, width - crop_size, size=num_crops)
 
-        for _ in range(num_crops):
-            # Generate random crop coordinates
-            top = random.randint(0, height - crop_size)
-            left = random.randint(0, width - crop_size)
+        # Create crops using list comprehension (more efficient than explicit loops)
+        crops = [
+            image.crop((left, top, left + crop_size, top + crop_size))
+            for top, left in zip(top_coords, left_coords)
+        ]
 
-            # Extract crop
-            crop = image.crop((left, top, left + crop_size, top + crop_size))
+        # Apply transforms using list comprehension
+        if self.transform:
+            transformed_crops = [self.transform(crop) for crop in crops]
+        else:
+            transformed_crops = crops
 
-            # Apply the same transforms as the main image
-            if self.transform:
-                crop = self.transform(crop)
-
-            all_crops.append(crop)
-
-        return all_crops
+        return transformed_crops
 
     def get_image_text_pair(self, idx):
         item = self.dataset[idx]

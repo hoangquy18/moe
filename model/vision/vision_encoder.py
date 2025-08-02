@@ -330,90 +330,6 @@ class MaskedVisionEncoder(nn.Module):
                     student_param.data * (1 - self.current_momentum)
                 )
 
-    def distillation_loss(
-        self,
-        student_features,
-        teacher_features,
-        local_crop_features=None,
-        step=0,
-        total_steps=1,
-    ):
-        """
-        Calculate self-distillation loss between student and teacher outputs following equation:
-        L_distill = -ΣΣ softmax((p^t_b - c)/τ_t) log(softmax(p^m_b/τ_s))
-
-        When local_crop_features is provided, compare the CLS tokens of local crops with the teacher.
-        """
-        if local_crop_features is not None and self.use_local_crops:
-            # Extract CLS tokens from local crops and teacher
-            local_crop_cls = local_crop_features[
-                :, 0
-            ]  # Extract CLS token from each local crop
-            teacher_cls = teacher_features[:, 0].repeat_interleave(
-                self.num_local_crops, dim=0
-            )  # Repeat teacher CLS for each crop
-
-            # Process through projection heads
-            student_projections = self.student_projection(
-                local_crop_cls, is_student=True, step=step, total_steps=total_steps
-            )
-            with torch.no_grad():
-                teacher_projections = self.teacher_projection(
-                    teacher_cls, is_student=False, step=step, total_steps=total_steps
-                )
-
-            # Get temperature parameters
-            student_temp = self.student_projection.student_temp
-            teacher_temp = self.teacher_projection.teacher_temp
-
-            # Calculate center (mean of teacher projections)
-            center = teacher_projections.mean(dim=0, keepdim=True)
-
-            # Apply centering and temperature scaling
-            teacher_logits = (teacher_projections - center) / teacher_temp
-            student_logits = student_projections / student_temp
-
-            # Calculate softmax distributions
-            teacher_probs = F.softmax(teacher_logits, dim=-1)
-            student_log_probs = F.log_softmax(student_logits, dim=-1)
-
-            # Calculate cross-entropy loss: -sum(teacher_probs * log(student_probs))
-            loss = -torch.sum(teacher_probs * student_log_probs, dim=-1).mean()
-
-        else:
-            # Original distillation approach without local crops
-            # Process through projection heads
-            student_projections = self.student_projection(
-                student_features, is_student=True, step=step, total_steps=total_steps
-            )
-            with torch.no_grad():
-                teacher_projections = self.teacher_projection(
-                    teacher_features,
-                    is_student=False,
-                    step=step,
-                    total_steps=total_steps,
-                )
-
-            # Get temperature parameters
-            student_temp = self.student_projection.student_temp
-            teacher_temp = self.teacher_projection.teacher_temp
-
-            # Calculate center (mean of teacher projections)
-            center = teacher_projections.mean(dim=0, keepdim=True)
-
-            # Apply centering and temperature scaling
-            teacher_logits = (teacher_projections - center) / teacher_temp
-            student_logits = student_projections / student_temp
-
-            # Calculate softmax distributions
-            teacher_probs = F.softmax(teacher_logits, dim=-1)
-            student_log_probs = F.log_softmax(student_logits, dim=-1)
-
-            # Calculate cross-entropy loss: -sum(teacher_probs * log(student_probs))
-            loss = -torch.sum(teacher_probs * student_log_probs, dim=-1).mean()
-
-        return loss
-
     def masking_loss(
         self, masked_features, original_features, mask, step=0, total_steps=1
     ):
@@ -445,9 +361,6 @@ class MaskedVisionEncoder(nn.Module):
             loss = loss / 2  # Average of the two directions
             return loss
 
-        # Extract only the masked tokens based on the mask
-        batch_size, seq_len, dim = masked_features.shape
-
         # Process through projection heads
         # For masked features (student)
         masked_projections = self.masking_projection(
@@ -467,39 +380,116 @@ class MaskedVisionEncoder(nn.Module):
         # Reshape mask to match feature dimensions if needed
         if mask.ndim == 2:
             mask = mask.unsqueeze(-1).expand_as(masked_features)
+        
+        # Create a binary mask for selecting tokens
+        binary_mask = mask[..., 0]  # Get the first dimension of the mask
+        
+        # Get indices of masked tokens
+        masked_indices = binary_mask.nonzero(as_tuple=True)
+        
+        if len(masked_indices[0]) == 0:  # No masked tokens
+            return torch.tensor(0.0, device=masked_features.device)
+        
+        # Select masked tokens using vectorized indexing
+        p_m = masked_projections[masked_indices]  # Student masked projections
+        p_b = teacher_projections[masked_indices]  # Teacher projections for masked positions
+        
+        # Calculate center (mean of teacher projections across batch and sequence)
+        c = teacher_projections.mean(dim=(0, 1))
+        
+        # Apply centering and temperature scaling
+        teacher_logits = (p_b - c) / teacher_temp
+        student_logits = p_m / student_temp
+        
+        # Calculate softmax distributions
+        teacher_probs = F.softmax(teacher_logits, dim=-1)
+        student_log_probs = F.log_softmax(student_logits, dim=-1)
+        
+        # Calculate cross-entropy loss: -sum(teacher_probs * log(student_probs))
+        token_losses = -torch.sum(teacher_probs * student_log_probs, dim=-1)
+        
+        # Average loss over all masked tokens
+        loss = token_losses.mean()
+        
+        return loss
 
-        # Calculate loss only for masked tokens
-        loss = 0.0
-        count = 0
+    def distillation_loss(
+        self,
+        student_features,
+        teacher_features,
+        local_crop_features=None,
+        step=0,
+        total_steps=1,
+    ):
+        """
+        Calculate self-distillation loss between student and teacher outputs following equation:
+        L_distill = -ΣΣ softmax((p^t_b - c)/τ_t) log(softmax(p^m_b/τ_s))
 
-        # Loop over batch and tokens to calculate loss per masked token
-        for b in range(batch_size):
-            for n in range(seq_len):
-                if mask[b, n, 0]:  # If this token was masked
-                    # Get student and teacher projections for this token
-                    p_m = masked_projections[b, n]  # Student masked projection
-                    p_b = teacher_projections[b, n]  # Teacher projection
+        When local_crop_features is provided, compare the CLS tokens of local crops with the teacher.
+        """
+        if local_crop_features is not None and self.use_local_crops:
+            # Extract CLS tokens from local crops and teacher
+            local_crop_cls = local_crop_features[:, 0]  # Extract CLS token from each local crop
+            teacher_cls = teacher_features[:, 0].repeat_interleave(
+                self.num_local_crops, dim=0
+            )  # Repeat teacher CLS for each crop
 
-                    # Calculate center (mean of teacher projections across batch)
-                    c = teacher_projections.mean(dim=(0, 1))
+            # Process through projection heads
+            student_projections = self.student_projection(
+                local_crop_cls, is_student=True, step=step, total_steps=total_steps
+            )
+            with torch.no_grad():
+                teacher_projections = self.teacher_projection(
+                    teacher_cls, is_student=False, step=step, total_steps=total_steps
+                )
 
-                    # Apply centering and temperature scaling
-                    teacher_logits = (p_b - c) / teacher_temp
-                    student_logits = p_m / student_temp
+            # Get temperature parameters
+            student_temp = self.student_projection.student_temp
+            teacher_temp = self.teacher_projection.teacher_temp
 
-                    # Calculate softmax
-                    teacher_probs = F.softmax(teacher_logits, dim=-1)
-                    student_log_probs = F.log_softmax(student_logits, dim=-1)
+            # Calculate center (mean of teacher projections)
+            center = teacher_projections.mean(dim=0, keepdim=True)
 
-                    # Calculate cross-entropy loss: -sum(teacher_probs * log(student_probs))
-                    token_loss = -torch.sum(teacher_probs * student_log_probs)
+            # Apply centering and temperature scaling
+            teacher_logits = (teacher_projections - center) / teacher_temp
+            student_logits = student_projections / student_temp
 
-                    loss += token_loss
-                    count += 1
+            # Calculate softmax distributions
+            teacher_probs = F.softmax(teacher_logits, dim=-1)
+            student_log_probs = F.log_softmax(student_logits, dim=-1)
 
-        # Average loss over masked tokens
-        if count > 0:
-            loss = loss / count
+            # Calculate cross-entropy loss: -sum(teacher_probs * log(student_probs))
+            loss = -torch.sum(teacher_probs * student_log_probs, dim=-1).mean()
+        else:
+            # Same vectorized implementation as before
+            student_projections = self.student_projection(
+                student_features, is_student=True, step=step, total_steps=total_steps
+            )
+            with torch.no_grad():
+                teacher_projections = self.teacher_projection(
+                    teacher_features,
+                    is_student=False,
+                    step=step,
+                    total_steps=total_steps,
+                )
+
+            # Get temperature parameters
+            student_temp = self.student_projection.student_temp
+            teacher_temp = self.teacher_projection.teacher_temp
+
+            # Calculate center (mean of teacher projections)
+            center = teacher_projections.mean(dim=0, keepdim=True)
+
+            # Apply centering and temperature scaling
+            teacher_logits = (teacher_projections - center) / teacher_temp
+            student_logits = student_projections / student_temp
+
+            # Calculate softmax distributions
+            teacher_probs = F.softmax(teacher_logits, dim=-1)
+            student_log_probs = F.log_softmax(student_logits, dim=-1)
+
+            # Calculate cross-entropy loss: -sum(teacher_probs * log(student_probs))
+            loss = -torch.sum(teacher_probs * student_log_probs, dim=-1).mean()
 
         return loss
 
@@ -549,7 +539,7 @@ class MaskedVisionEncoder(nn.Module):
                     pixel_values=image_features
                 ).last_hidden_state
                 teacher_features = self.teacher_model.feature_extraction(
-                    teacher_hidden_states, "cls_patch"
+                    teacher_hidden_states, "patch"
                 )
 
             # Local crop processing for self-distillation
