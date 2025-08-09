@@ -400,6 +400,9 @@ class ContrastiveTrainer:
                         )
 
                         # Normalize features
+                        text_features = self.model.feature_extraction(text_features, "cls")
+                        image_features = self.model.feature_extraction(image_features, "cls")
+
                         mm_images = image_features / image_features.norm(dim=1, keepdim=True)
                         mm_texts = text_features / text_features.norm(dim=1, keepdim=True)
                     else:

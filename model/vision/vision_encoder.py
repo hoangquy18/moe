@@ -523,14 +523,14 @@ class MaskedVisionEncoder(nn.Module):
 
             # Process masked hidden_states
             masked_features = self.vision_encoder.feature_extraction(
-                masked_hidden_states, extract_type
-            )
+                masked_hidden_states, "cls_patch"
+            )[:,1:]
             masked_hidden_states = masked_hidden_states[:, 1:]  # Exclude CLS token
             mask = mask[:, 1:]  # Exclude CLS token from mask
 
             # Process original hidden_states
             original_features = self.vision_encoder.feature_extraction(
-                original_hidden_states, extract_type
+                original_hidden_states, 'patch'
             )
 
             # Get teacher predictions
@@ -567,7 +567,7 @@ class MaskedVisionEncoder(nn.Module):
             )
 
             # Return masked features for downstream tasks
-            return masked_features, {
+            return original_hidden_states, {
                 "mask": mask,
                 "distillation_loss": dist_loss,
                 "masking_loss": mask_loss,
@@ -580,7 +580,7 @@ class MaskedVisionEncoder(nn.Module):
             masked_features = self.vision_encoder.feature_extraction(
                 masked_hidden_states, extract_type
             )
-            return masked_features, {"mask": mask}
+            return hidden_states, {"mask": mask}
         else:
             # Regular forward pass without masking
             features = self.vision_encoder(image_features, extract_type)
