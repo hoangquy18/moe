@@ -372,7 +372,7 @@ class ContrastiveTrainer:
                         # Apply masking during forward pass with local crops
                         image_features_result = self.model.vision_encoder(
                             images,
-                            extract_type="patch",
+                            extract_type="cls_patch",
                             apply_masking=True,
                             step=step,
                             total_steps=total_steps,
@@ -399,42 +399,9 @@ class ContrastiveTrainer:
                             attention_mask=attention_mask,
                         )
 
-                        # Use multimodal encoder with original features if available
-                        if original_features is not None:
-                            text_projection = self.model.project_text_features(
-                                text_features
-                            )
-                            image_projection = self.model.project_image_features(
-                                original_features
-                            )
-                        else:
-                            text_projection = self.model.project_text_features(
-                                text_features
-                            )
-                            image_projection = self.model.project_image_features(
-                                image_features
-                            )
-
-                        # Process through multimodal encoder
-                        text_image_features = torch.cat(
-                            (text_projection, image_projection), dim=1
-                        )
-                        mm_features = self.model.mm_encoder(text_image_features)
-
-                        B, text_len, _ = text_features.size()
-                        mm_images = mm_features[:, text_len:, :]
-                        mm_texts = mm_features[:, :text_len, :]
-
-                        mm_images = self.model.feature_extraction(
-                            mm_images, self.model.proj_type
-                        )
-                        mm_texts = self.model.feature_extraction(
-                            mm_texts, self.model.proj_type
-                        )
-
                         # Normalize features
-                        mm_images = mm_images / mm_images.norm(dim=1, keepdim=True)
-                        mm_texts = mm_texts / mm_texts.norm(dim=1, keepdim=True)
+                        mm_images = image_features / image_features.norm(dim=1, keepdim=True)
+                        mm_texts = text_features / text_features.norm(dim=1, keepdim=True)
                     else:
                         # Regular forward pass without masking
                         mm_texts, mm_images = self.model(
@@ -519,7 +486,7 @@ class ContrastiveTrainer:
                     # Apply masking during forward pass
                     image_features_result = self.model.vision_encoder(
                         images,
-                        extract_type="patch",
+                        extract_type="cls_patch",
                         apply_masking=True,
                         step=step,
                         total_steps=total_steps,

@@ -9,6 +9,7 @@ from torchvision import transforms
 from typing import Dict, List, Tuple, Optional, Union, Any
 from collections import defaultdict
 from datasets import Dataset as HFDataset
+from utils.logger_config import logger
 
 try:
     import clip
@@ -198,13 +199,13 @@ class ContrastiveJsonDataset(ContrastiveDataset):
                 if self.transform:
                     image = self.transform(image)
             else:
-                print(f"Warning: Image not found at {image_path}, using empty image")
+                logger.info(f"Warning: Image not found at {image_path}, using empty image")
                 image = self._create_empty_image()
                 local_crops = None
                 if self.transform:
                     image = self.transform(image)
         except Exception as e:
-            print(
+            logger.info(
                 f"Warning: Failed to load image at {image_path}: {e}, using empty image"
             )
             image = self._create_empty_image()
