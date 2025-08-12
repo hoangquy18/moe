@@ -593,24 +593,7 @@ class ContrastiveTrainer:
             ):
                 progress_bar.set_postfix(
                     {
-                        "total_loss": f"{batch_loss:.4f}",
-                        "cont_loss": f"{contrastive_loss.item():.4f}",
-                        "dist_loss": (
-                            f"{(self.distillation_alpha * distillation_loss.item()):.4f}"
-                            if distillation_loss > 0
-                            else "0.0000"
-                        ),
-                        "mask_loss": (
-                            f"{(self.masking_beta * masking_loss.item()):.4f}"
-                            if masking_loss > 0
-                            else "0.0000"
-                        ),
-                        "lr": f"{self.scheduler.get_last_lr()[0]:.6f}",
-                        "momentum": (
-                            f"{self.model.vision_encoder.current_momentum.item():.6f}"
-                            if hasattr(self.model.vision_encoder, "current_momentum")
-                            else "N/A"
-                        ),
+                        "total_loss, cont_loss, dist_loss, mask_loss, momentum": f"{batch_loss:.4f}, {(self.distillation_alpha * distillation_loss.item()):.4f}, {(self.masking_beta * masking_loss.item()):.4f}, {self.model.vision_encoder.current_momentum.item():.6f}",
                     }
                 )
             else:
