@@ -455,7 +455,7 @@ class ContrastiveTrainer:
                 ):
                     # Gradient clipping with scaler
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
                     # Optimizer step with scaler
                     self.scaler.step(self.optimizer)
