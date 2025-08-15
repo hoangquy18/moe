@@ -203,6 +203,7 @@ class ContrastiveTrainer:
         self.optimizer = optim.Adafactor(
             model.parameters(),
             lr=learning_rate,
+            weight_decay=self.weight_decay,
         )
 
         self.loss_fn_name = loss_fn.lower()
@@ -398,9 +399,9 @@ class ContrastiveTrainer:
                             text_token_type_ids=token_type_ids,
                             text_attention_mask=attention_mask,
                             image_features=images,
-                            return_embeddings_only=True
+                            return_embeddings_only=True,
                         )
-                        
+
                     else:
                         # Regular forward pass without masking
                         mm_texts, mm_images = self.model(
@@ -451,7 +452,7 @@ class ContrastiveTrainer:
                 ):
                     # Gradient clipping with scaler
                     self.scaler.unscale_(self.optimizer)
-                    # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
                     # Optimizer step with scaler
                     self.scaler.step(self.optimizer)
@@ -476,6 +477,15 @@ class ContrastiveTrainer:
 
                     # Update global step only when optimizer step is performed
                     self.global_step += 1
+            if batch_idx % 100 == 0:
+                logger.info(
+                    f"Step {batch_idx}: "
+                    f"Total: {batch_loss:.4f}, "
+                    f"Contrastive: {contrastive_loss.item():.4f}, "
+                    f"Distillation: {distillation_loss.item():.4f}, "
+                    f"Masking: {masking_loss.item():.4f}, "
+                    f"LR: {self.scheduler.get_last_lr()[0]:.6f}"
+                )
 
             # For logging, use the unscaled loss value
             batch_loss = loss.item() * self.gradient_accumulation_steps
@@ -485,14 +495,16 @@ class ContrastiveTrainer:
             if self.use_masking and isinstance(
                 self.model.vision_encoder, MaskedVisionEncoder
             ):
-                progress_bar.set_postfix({
-                    "-": (
-                        f"{batch_loss:.3f}, "
-                        f"{item_ct_loss:.3f}, "
-                        f"{(self.distillation_alpha * distillation_loss.item()):.3f}, "
-                        f"{(self.masking_beta * masking_loss.item()):.3f}"
-                    )
-                })
+                progress_bar.set_postfix(
+                    {
+                        "-": (
+                            f"{batch_loss:.3f}, "
+                            f"{item_ct_loss:.3f}, "
+                            f"{(self.distillation_alpha * distillation_loss.item()):.3f}, "
+                            f"{(self.masking_beta * masking_loss.item()):.3f}"
+                        )
+                    }
+                )
             else:
                 progress_bar.set_postfix(
                     {
