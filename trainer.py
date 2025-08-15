@@ -393,18 +393,14 @@ class ContrastiveTrainer:
                             original_features = None
 
                         # Get text features from the model
-                        text_features = self.model.text_encoder(
-                            input_ids=text_input_ids,
-                            token_type_ids=token_type_ids,
-                            attention_mask=attention_mask,
+                        mm_texts, mm_images = self.model(
+                            text_input_ids=text_input_ids,
+                            text_token_type_ids=token_type_ids,
+                            text_attention_mask=attention_mask,
+                            image_features=images,
+                            return_embeddings_only=True
                         )
-
-                        # Normalize features
-                        text_features = self.model.feature_extraction(text_features, "cls")
-                        image_features = self.model.feature_extraction(image_features, "cls")
-
-                        mm_images = image_features / image_features.norm(dim=1, keepdim=True)
-                        mm_texts = text_features / text_features.norm(dim=1, keepdim=True)
+                        
                     else:
                         # Regular forward pass without masking
                         mm_texts, mm_images = self.model(
@@ -432,7 +428,7 @@ class ContrastiveTrainer:
                             logit_scale,
                             logit_bias=logit_bias,
                         )
-
+                    item_ct_loss = contrastive_loss.item()
                     # Combine losses with specified weights: α = 1, β = 2
                     loss = contrastive_loss
                     if distillation_loss > 0:
@@ -480,108 +476,6 @@ class ContrastiveTrainer:
 
                     # Update global step only when optimizer step is performed
                     self.global_step += 1
-            else:
-                # Regular FP32 training
-                # Check if we're using a masked vision encoder
-                if self.use_masking and isinstance(
-                    self.model.vision_encoder, MaskedVisionEncoder
-                ):
-                    # Apply masking during forward pass
-                    image_features_result = self.model.vision_encoder(
-                        images,
-                        extract_type="cls_patch",
-                        apply_masking=True,
-                        step=step,
-                        total_steps=total_steps,
-                        local_crops=local_crops,
-                    )
-
-                    if isinstance(image_features_result, tuple):
-                        # Unpack the result - features and additional info
-                        image_features, mask_info = image_features_result
-                        distillation_loss = mask_info.get("distillation_loss", 0.0)
-                        masking_loss = mask_info.get("masking_loss", 0.0)
-                        original_features = mask_info.get("original_features", None)
-                    else:
-                        # If no masking was applied despite the setting
-                        image_features = image_features_result
-                        distillation_loss = 0.0
-                        masking_loss = 0.0
-                        original_features = None
-
-                    # Get text features from the model
-                    text_features = self.model.text_encoder(
-                        input_ids=text_input_ids,
-                        token_type_ids=token_type_ids,
-                        attention_mask=attention_mask,
-                    )
-                else:
-                    # Regular forward pass without masking
-                    text_features, image_features = self.model(
-                        text_input_ids=text_input_ids,
-                        image_features=images,
-                        text_attention_mask=attention_mask,
-                        text_token_type_ids=token_type_ids,
-                    )
-                    distillation_loss = 0.0
-                    masking_loss = 0.0
-
-                # Calculate contrastive loss
-                logit_scale = self.model.logit_scale.exp()
-
-                if self.loss_fn_name == "clip":
-                    contrastive_loss = self.loss_fn(
-                        image_features, text_features, logit_scale
-                    )
-                elif self.loss_fn_name == "siglip":
-                    logit_bias = self.model.logit_bias
-                    contrastive_loss = self.loss_fn(
-                        image_features,
-                        text_features,
-                        logit_scale,
-                        logit_bias=logit_bias,
-                    )
-
-                # Combine losses: contrastive loss + distillation loss
-                loss = contrastive_loss
-                if distillation_loss > 0:
-                    loss += (
-                        self.distillation_alpha * distillation_loss
-                    )  # α * distillation_loss
-                if masking_loss > 0:
-                    loss += self.masking_beta * masking_loss  # β * masking_loss
-
-                # Scale the loss by gradient accumulation steps
-                loss = loss / self.gradient_accumulation_steps
-
-                # Backward pass
-                loss.backward()
-
-                # Update weights if we've processed enough batches for accumulation or if it's the last batch
-                if (
-                    (batch_idx + 1) % self.gradient_accumulation_steps == 0
-                    or batch_idx == num_batches - 1
-                ):
-                    # Gradient clipping
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-
-                    # Optimizer step
-                    self.optimizer.step()
-                    self.scheduler.step()
-
-                    # Update teacher model if using self-distillation
-                    if (
-                        self.use_masking
-                        and isinstance(self.model.vision_encoder, MaskedVisionEncoder)
-                        and hasattr(self.model.vision_encoder, "update_teacher")
-                    ):
-                        self.model.vision_encoder.update_teacher()
-
-                    # Reset gradients
-                    self.optimizer.zero_grad()
-
-                    # Update global step only when optimizer step is performed
-                    self.global_step += 1
 
             # For logging, use the unscaled loss value
             batch_loss = loss.item() * self.gradient_accumulation_steps
@@ -591,11 +485,14 @@ class ContrastiveTrainer:
             if self.use_masking and isinstance(
                 self.model.vision_encoder, MaskedVisionEncoder
             ):
-                progress_bar.set_postfix(
-                    {
-                        "-": f"{batch_loss:.3f}, {(self.distillation_alpha * distillation_loss.item()):.3f}, {(self.masking_beta * masking_loss.item()):.3f}",
-                    }
-                )
+                progress_bar.set_postfix({
+                    "-": (
+                        f"{batch_loss:.3f}, "
+                        f"{item_ct_loss:.3f}, "
+                        f"{(self.distillation_alpha * distillation_loss.item()):.3f}, "
+                        f"{(self.masking_beta * masking_loss.item()):.3f}"
+                    )
+                })
             else:
                 progress_bar.set_postfix(
                     {

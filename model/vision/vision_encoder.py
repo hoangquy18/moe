@@ -125,12 +125,12 @@ class MaskedVisionEncoder(nn.Module):
         self.local_crop_size = getattr(config, "local_crop_size", 98)  # 98x98 pixels
 
         # Initialize the base vision encoder
-        self.vision_encoder = VisionEncoder(config)
-        self.vision_config = CLIPVisionConfig.from_pretrained(config.vision_model_name)
+        self.student_encoder = VisionEncoder(config)
+        self.student_config = CLIPVisionConfig.from_pretrained(config.vision_model_name)
 
         # Initialize projection heads for self-distillation and masking
         if self.use_self_distillation:
-            student_hidden_size = self.vision_encoder.vision_config.hidden_size
+            student_hidden_size = self.student_encoder.vision_config.hidden_size
             self.student_projection = ProjectionHead(
                 student_hidden_size, student_hidden_size
             )
@@ -143,50 +143,27 @@ class MaskedVisionEncoder(nn.Module):
                 # Use a different model for the teacher
                 teacher_config = config
                 teacher_config.vision_model_name = config.teacher_model_name
-                self.teacher_model = VisionEncoder(teacher_config)
+                self.teacher_encoder = VisionEncoder(teacher_config)
                 self.teacher_vision_config = CLIPVisionConfig.from_pretrained(
                     config.teacher_model_name
                 )
                 teacher_hidden_size = self.teacher_vision_config.hidden_size
 
-                # If teacher and student have different hidden sizes, add an adapter layer
-                if teacher_hidden_size != student_hidden_size:
-                    self.teacher_adapter = nn.Linear(
-                        teacher_hidden_size, student_hidden_size
-                    )
-                else:
-                    self.teacher_adapter = nn.Identity()
             else:
                 # Use the same model architecture for teacher and student
-                self.teacher_model = VisionEncoder(config)
+                self.teacher_encoder = VisionEncoder(config)
                 teacher_hidden_size = student_hidden_size
-                self.teacher_adapter = nn.Identity()
 
             # Create teacher projection with appropriate hidden size
             self.teacher_projection = ProjectionHead(
                 teacher_hidden_size, student_hidden_size
             )
 
-            # If using the same model, copy weights from student to teacher
-            if (
-                not hasattr(config, "teacher_model_name")
-                or not config.teacher_model_name
-            ):
-                self.teacher_model.load_state_dict(self.vision_encoder.state_dict())
-                self.teacher_projection.load_state_dict(
-                    self.student_projection.state_dict()
-                )
-
             # Freeze the teacher model
-            for param in self.teacher_model.parameters():
+            for param in self.teacher_encoder.parameters():
                 param.requires_grad = False
-            for param in self.teacher_projection.parameters():
-                param.requires_grad = False
-            if hasattr(self, "teacher_adapter") and not isinstance(
-                self.teacher_adapter, nn.Identity
-            ):
-                for param in self.teacher_adapter.parameters():
-                    param.requires_grad = False
+            # for param in self.teacher_projection.parameters():
+            #     param.requires_grad = False
 
             # Register buffer for tracking current momentum value
             self.register_buffer(
@@ -315,7 +292,7 @@ class MaskedVisionEncoder(nn.Module):
         with torch.no_grad():
             # Update vision encoder
             for student_param, teacher_param in zip(
-                self.vision_encoder.parameters(), self.teacher_model.parameters()
+                self.student_encoder.parameters(), self.teacher_encoder.parameters()
             ):
                 teacher_param.data.mul_(self.current_momentum).add_(
                     student_param.data * (1 - self.current_momentum)
@@ -342,24 +319,6 @@ class MaskedVisionEncoder(nn.Module):
 
         L_mask = -∑∑softmax((p^b_n - c')/τ'_t) log(softmax(p^m_b,n/τ'_s))
         """
-        # We need to work with token-level features, not pooled features
-        if masked_features.ndim == 2:
-            # If we received pooled features (CLS tokens), we can't compute proper masking loss
-            # Fall back to general similarity loss
-            masked_projections = self.masking_projection(
-                masked_features, is_student=True, step=step, total_steps=total_steps
-            )
-            original_projections = self.student_projection(
-                original_features, is_student=True, step=step, total_steps=total_steps
-            ).detach()
-
-            sim = masked_projections @ original_projections.t()
-
-            # Cross-entropy loss
-            labels = torch.arange(sim.size(0), device=sim.device)
-            loss = F.cross_entropy(sim, labels) + F.cross_entropy(sim.t(), labels)
-            loss = loss / 2  # Average of the two directions
-            return loss
 
         # Process through projection heads
         # For masked features (student)
@@ -514,7 +473,7 @@ class MaskedVisionEncoder(nn.Module):
         """
         if apply_masking and self.use_self_distillation:
             # Get original features from student model
-            original_hidden_states = self.vision_encoder.vision_model(
+            original_hidden_states = self.student_encoder.vision_model(
                 pixel_values=image_features
             ).last_hidden_state
 
@@ -522,23 +481,23 @@ class MaskedVisionEncoder(nn.Module):
             masked_hidden_states, mask = self.apply_mask(original_hidden_states.clone())
 
             # Process masked hidden_states
-            masked_features = self.vision_encoder.feature_extraction(
+            masked_features = self.student_encoder.feature_extraction(
                 masked_hidden_states, "cls_patch"
             )[:,1:]
             masked_hidden_states = masked_hidden_states[:, 1:]  # Exclude CLS token
             mask = mask[:, 1:]  # Exclude CLS token from mask
 
             # Process original hidden_states
-            original_features = self.vision_encoder.feature_extraction(
+            original_features = self.student_encoder.feature_extraction(
                 original_hidden_states, 'patch'
             )
 
             # Get teacher predictions
             with torch.no_grad():
-                teacher_hidden_states = self.teacher_model.vision_model(
+                teacher_hidden_states = self.teacher_encoder.vision_model(
                     pixel_values=image_features
                 ).last_hidden_state
-                teacher_features = self.teacher_model.feature_extraction(
+                teacher_features = self.teacher_encoder.feature_extraction(
                     teacher_hidden_states, "patch"
                 )
 
@@ -547,7 +506,7 @@ class MaskedVisionEncoder(nn.Module):
             if self.use_local_crops and local_crops is not None:
                 # Process local crops through student model
                 with torch.no_grad():  # No need to backprop through the local crop processing
-                    local_crop_hidden_states = self.vision_encoder.vision_model(
+                    local_crop_hidden_states = self.student_encoder.vision_model(
                         pixel_values=local_crops
                     ).last_hidden_state
                     local_crop_features = local_crop_hidden_states
@@ -575,15 +534,15 @@ class MaskedVisionEncoder(nn.Module):
             }
         elif apply_masking:
             # Simpler path when not using self-distillation
-            hidden_states = self.vision_encoder.vision_model(image_features)
+            hidden_states = self.student_encoder.vision_model(image_features)
             masked_hidden_states, mask = self.apply_mask(hidden_states)
-            masked_features = self.vision_encoder.feature_extraction(
+            masked_features = self.student_encoder.feature_extraction(
                 masked_hidden_states, extract_type
             )
             return hidden_states, {"mask": mask}
         else:
             # Regular forward pass without masking
-            features = self.vision_encoder(image_features, extract_type)
+            features = self.student_encoder(image_features, extract_type)
             return features
 
 
@@ -611,10 +570,6 @@ class VisionEncoder(nn.Module):
         self.image_processor = CLIPImageProcessor.from_pretrained(
             config.vision_model_name
         )
-
-        if config.proj_type == "map":
-            self.map_head = MultiheadAttentionPoolingHead(self.vision_config)
-
     def feature_extraction(
         self,
         hidden_states: torch.Tensor,
@@ -634,8 +589,6 @@ class VisionEncoder(nn.Module):
             hidden_states = hidden_states[:, 0]
         elif extract_type == "cls_patch":
             hidden_states = hidden_states
-        elif extract_type == "map":
-            hidden_states = self.map_head(hidden_states)
         elif extract_type == "gap":
             hidden_states = torch.mean(hidden_states, dim=1)
         else:
