@@ -1,37 +1,35 @@
 import os
 import torch
-from model.vision.vision_encoder import VisionEncoder, MaskedVisionEncoder
+from model.vision.simple_vision_encoder import VisionEncoder
 from model.text.text_encoder import TextEncoder
 from model.mm.mm_encoder import MultiModalEncoder
 from model.config import VisionConfig, TextConfig, MultiModalConfig
 
 
-def build_vision_encoder(use_masking=False, vision_config=None):
+def build_vision_encoder(vision_config=None):
+    """
+    Build a simplified vision encoder for two-stage training
+    """
     if vision_config is None:
         vision_config = VisionConfig()
-    
-    if use_masking:
-        # Use MaskedVisionEncoder with specified configurations
-        vision_encoder = MaskedVisionEncoder(vision_config)
-    else:
-        vision_encoder = VisionEncoder(vision_config)
-        
-    if vision_config.load_vision_pretrained:
+
+    # Always use the simplified VisionEncoder
+    vision_encoder = VisionEncoder(vision_config)
+
+    # Load pretrained weights if specified
+    if vision_config.load_vision_pretrained and vision_config.vision_model_weights:
         if os.path.exists(vision_config.vision_model_weights):
-            # For MaskedVisionEncoder, only load weights for base encoder
-            if use_masking:
-                base_state_dict = torch.load(vision_config.vision_model_weights, map_location="cpu")
-                # Filter state dict to only include keys for base vision_encoder
-                filtered_state_dict = {
-                    f"vision_encoder.{k}": v for k, v in base_state_dict.items()
-                }
-                vision_encoder.load_state_dict(filtered_state_dict, strict=False)
-            else:
-                vision_encoder.load_state_dict(
-                    torch.load(vision_config.vision_model_weights, map_location="cpu"),
-                    strict=False,
+            try:
+                state_dict = torch.load(
+                    vision_config.vision_model_weights, map_location="cpu"
                 )
-    
+                vision_encoder.load_state_dict(state_dict, strict=False)
+                print(
+                    f"Loaded vision pretrained weights from {vision_config.vision_model_weights}"
+                )
+            except Exception as e:
+                print(f"Warning: Could not load vision weights: {e}")
+
     return vision_encoder
 
 
@@ -48,8 +46,11 @@ def build_text_encoder():
     return text_encoder
 
 
-def build_model(use_masking=False, vision_config=None):
-    vision_encoder = build_vision_encoder(use_masking=use_masking, vision_config=vision_config)
+def build_model(vision_config=None):
+    """
+    Build a simplified multimodal model for two-stage training
+    """
+    vision_encoder = build_vision_encoder(vision_config=vision_config)
     text_encoder = build_text_encoder()
 
     multimodal_config = MultiModalConfig()

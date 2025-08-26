@@ -19,6 +19,17 @@ class TrainingConfig:
     # Model parameters
     loss_fn: str = "clip"  # "clip" or "siglip"
 
+    # Two-stage training
+    training_stage: str = "contrastive"  # "teacher" or "contrastive"
+    
+    # Teacher Learning Stage parameters
+    parallel_text_dataset: str = ""  # Path to parallel text corpus
+    teacher_epochs: int = 5  # Number of epochs for teacher learning stage
+    
+    # Contrastive Learning Stage parameters  
+    contrastive_epochs: int = 10  # Number of epochs for contrastive learning stage
+    multilingual_data_ratio: float = 1.0  # Ratio of multilingual to bilingual data
+
     # Logging and checkpointing
     output_dir: str = "outputs"
     save_every: int = 1

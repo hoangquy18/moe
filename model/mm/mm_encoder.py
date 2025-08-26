@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Literal, Dict, Optional, Tuple
 from model.modeling import MLP, MultiheadAttentionPoolingHead
+from transformers import CLIPModel
 
 
 class MultiModalEncoder(nn.Module):
@@ -13,6 +14,27 @@ class MultiModalEncoder(nn.Module):
         self.text_encoder = text_encoder
         self.vision_encoder = vision_encoder
 
+        # Initialize CLIP model for teacher learning stage
+        self.vision_text_model = CLIPModel.from_pretrained(
+            "openai/clip-vit-base-patch32"
+        )
+
+        # Freeze CLIP model parameters (they serve as frozen teacher)
+        for param in self.vision_text_model.parameters():
+            param.requires_grad = False
+
+        # Add projection head for Stage 1 alignment (only for XLM-R)
+        # CLIP: EOS token features used directly (no projection)
+        # XLM-R: CLS token features -> FCT projection
+        clip_text_dim = self.vision_text_model.config.text_config.hidden_size  # 512
+        xlmr_text_dim = text_encoder.text_config.hidden_size  # 768
+
+        # Only XLM-R needs projection to align with CLIP dimension
+        self.xlmr_text_projection = nn.Linear(
+            xlmr_text_dim, clip_text_dim
+        )  # 768 -> 512
+
+        # Optionally freeze other components
         if config.text_frozen:
             for param in self.text_encoder.parameters():
                 param.requires_grad = False
@@ -67,11 +89,15 @@ class MultiModalEncoder(nn.Module):
         sim_matrix = torch.matmul(mm_texts, mm_images.transpose(0, 1))
 
         # Return the optimized features and similarity information
-        return mm_texts, mm_images, {
-            "similarity_matrix": sim_matrix,
-            "logit_scale": self.logit_scale.exp(),
-            "logit_bias": self.logit_bias,
-        }
+        return (
+            mm_texts,
+            mm_images,
+            {
+                "similarity_matrix": sim_matrix,
+                "logit_scale": self.logit_scale.exp(),
+                "logit_bias": self.logit_bias,
+            },
+        )
 
     def forward(
         self,
@@ -114,9 +140,9 @@ class MultiModalEncoder(nn.Module):
         # normalized features
         text_features = self.feature_extraction(text_features, "cls")
         image_features = self.feature_extraction(image_features, "cls")
-        
-        mm_images = image_features / image_features.norm(dim=1, keepdim=True)
-        mm_texts = text_features / text_features.norm(dim=1, keepdim=True)
+
+        mm_images = image_features / image_features.norm(dim=-1, keepdim=True)
+        mm_texts = text_features / text_features.norm(dim=-1, keepdim=True)
 
         if return_embeddings_only:
             return mm_texts, mm_images

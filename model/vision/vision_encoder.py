@@ -339,37 +339,39 @@ class MaskedVisionEncoder(nn.Module):
         # Reshape mask to match feature dimensions if needed
         if mask.ndim == 2:
             mask = mask.unsqueeze(-1).expand_as(masked_features)
-        
+
         # Create a binary mask for selecting tokens
         binary_mask = mask[..., 0]  # Get the first dimension of the mask
-        
+
         # Get indices of masked tokens
         masked_indices = binary_mask.nonzero(as_tuple=True)
-        
+
         if len(masked_indices[0]) == 0:  # No masked tokens
             return torch.tensor(0.0, device=masked_features.device)
-        
+
         # Select masked tokens using vectorized indexing
         p_m = masked_projections[masked_indices]  # Student masked projections
-        p_b = teacher_projections[masked_indices]  # Teacher projections for masked positions
-        
+        p_b = teacher_projections[
+            masked_indices
+        ]  # Teacher projections for masked positions
+
         # Calculate center (mean of teacher projections across batch and sequence)
         c = teacher_projections.mean(dim=(0, 1))
-        
+
         # Apply centering and temperature scaling
         teacher_logits = (p_b - c) / teacher_temp
         student_logits = p_m / student_temp
-        
+
         # Calculate softmax distributions
         teacher_probs = F.softmax(teacher_logits, dim=-1)
         student_log_probs = F.log_softmax(student_logits, dim=-1)
-        
+
         # Calculate cross-entropy loss: -sum(teacher_probs * log(student_probs))
         token_losses = -torch.sum(teacher_probs * student_log_probs, dim=-1)
-        
+
         # Average loss over all masked tokens
         loss = token_losses.mean()
-        
+
         return loss
 
     def distillation_loss(
@@ -388,7 +390,9 @@ class MaskedVisionEncoder(nn.Module):
         """
         if local_crop_features is not None and self.use_local_crops:
             # Extract CLS tokens from local crops and teacher
-            local_crop_cls = local_crop_features[:, 0]  # Extract CLS token from each local crop
+            local_crop_cls = local_crop_features[
+                :, 0
+            ]  # Extract CLS token from each local crop
             teacher_cls = teacher_features[:, 0].repeat_interleave(
                 self.num_local_crops, dim=0
             )  # Repeat teacher CLS for each crop
@@ -483,13 +487,13 @@ class MaskedVisionEncoder(nn.Module):
             # Process masked hidden_states
             masked_features = self.student_encoder.feature_extraction(
                 masked_hidden_states, "cls_patch"
-            )[:,1:]
+            )[:, 1:]
             masked_hidden_states = masked_hidden_states[:, 1:]  # Exclude CLS token
             mask = mask[:, 1:]  # Exclude CLS token from mask
 
             # Process original hidden_states
             original_features = self.student_encoder.feature_extraction(
-                original_hidden_states, 'patch'
+                original_hidden_states, "patch"
             )
 
             # Get teacher predictions
@@ -570,6 +574,7 @@ class VisionEncoder(nn.Module):
         self.image_processor = CLIPImageProcessor.from_pretrained(
             config.vision_model_name
         )
+
     def feature_extraction(
         self,
         hidden_states: torch.Tensor,

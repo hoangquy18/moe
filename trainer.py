@@ -13,7 +13,6 @@ from transformers import (
 )
 from torch.amp import autocast, GradScaler
 from data.contrastive_dataloader import create_contrastive_dataloader
-from model.vision.vision_encoder import MaskedVisionEncoder
 
 try:
     import transformer_engine.pytorch as te
@@ -106,13 +105,7 @@ class ContrastiveTrainer:
         num_workers=1,
         use_controlled_negatives=False,
         seed=42,
-        use_masking=False,
-        mask_ratio=0.4,
-        distillation_alpha=1.0,  # α = 1
-        masking_beta=2.0,  # β = 2
-        create_local_crops=False,
-        num_local_crops=4,
-        local_crop_size=98,
+        training_stage="contrastive",  # "teacher" or "contrastive"
     ):
         self.model = model.to(device)
         self.train_dataset = train_dataset
@@ -134,14 +127,8 @@ class ContrastiveTrainer:
         self.num_workers = num_workers
         self.use_controlled_negatives = use_controlled_negatives
         self.seed = seed
-        self.use_masking = use_masking
-        self.mask_ratio = mask_ratio
-        self.distillation_alpha = distillation_alpha
-        self.masking_beta = masking_beta
+        self.training_stage = training_stage
         self.warmup_epochs = warmup_epochs
-        self.create_local_crops = create_local_crops
-        self.num_local_crops = num_local_crops
-        self.local_crop_size = local_crop_size
 
         # Set up mixed precision training
         self.use_amp = precision != "fp32" and device != "cpu"
@@ -169,19 +156,29 @@ class ContrastiveTrainer:
             self.scaler = None
             logger.info("Using FP32 precision training")
 
-        # Create data loaders
-        self.train_loader = create_contrastive_dataloader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=not use_distributed,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            use_controlled_negatives=self.use_controlled_negatives,
-            seed=self.seed,
-            create_local_crops=self.create_local_crops,
-            num_local_crops=self.num_local_crops,
-            local_crop_size=self.local_crop_size,
-        )
+        # Create data loaders based on training stage
+        if self.training_stage == "teacher":
+            # For teacher learning stage, use standard DataLoader for parallel text
+            from torch.utils.data import DataLoader
+
+            self.train_loader = DataLoader(
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=not use_distributed,
+                num_workers=self.num_workers,
+                pin_memory=True,
+            )
+        else:
+            # For contrastive learning stage, use specialized contrastive dataloader
+            self.train_loader = create_contrastive_dataloader(
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=not use_distributed,
+                num_workers=self.num_workers,
+                pin_memory=True,
+                use_controlled_negatives=self.use_controlled_negatives,
+                seed=self.seed,
+            )
 
         if val_dataset:
             self.val_loader = create_contrastive_dataloader(
@@ -192,9 +189,6 @@ class ContrastiveTrainer:
                 pin_memory=True,
                 use_controlled_negatives=self.use_controlled_negatives,
                 seed=self.seed,
-                create_local_crops=self.create_local_crops,
-                num_local_crops=self.num_local_crops,
-                local_crop_size=self.local_crop_size,
             )
         else:
             self.val_loader = None
@@ -252,6 +246,7 @@ class ContrastiveTrainer:
         logger.info(
             f"Initialized ContrastiveTrainer with {model.__class__.__name__} on {device}"
         )
+        logger.info(f"Training stage: {self.training_stage}")
 
     def _get_scheduler(self):
         """Create a learning rate scheduler with warmup."""
@@ -321,6 +316,63 @@ class ContrastiveTrainer:
         )
         return checkpoint["epoch"]
 
+    def _teacher_learning_step(self, batch):
+        """
+        Teacher Learning Stage: Align CLIP text encoder with XLM-R text encoder using parallel text.
+        This stage trains the model to align embeddings from both text encoders using text-only data.
+        """
+        # Extract parallel text data (e.g., English and Vietnamese)
+        text_1 = batch["text_1"]  # e.g., English text
+        text_2 = batch["text_2"]  # e.g., Vietnamese text
+
+        # Stage 1: Teacher Learning as described in the paper
+
+        # Get CLIP EOS token features (teacher encoder - no projection needed)
+        # Get hidden states from CLIP text model
+        clip_text_outputs = self.model.vision_text_model.text_model(
+            input_ids=text_1["input_ids"],
+            attention_mask=text_1["attention_mask"],
+        )
+        clip_hidden_states = (
+            clip_text_outputs.last_hidden_state
+        )  # [batch_size, seq_len, 512]
+
+        # Extract EOS token features using CLIP's official method
+        # From CLIP: x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)]
+        # This finds the position of the last token (highest position value) in each sequence
+        eot_positions = text_1["input_ids"].argmax(dim=-1)  # [batch_size]
+        clip_eos_features = clip_hidden_states[
+            torch.arange(clip_hidden_states.shape[0]), eot_positions
+        ]  # [batch_size, 512]
+
+        # Get XLM-R text features from [CLS] token (student encoder)
+        xlmr_hidden_states = self.model.text_encoder.text_model(
+            input_ids=text_2["input_ids"],
+            attention_mask=text_2["attention_mask"],
+            token_type_ids=text_2.get("token_type_ids", None),
+        ).last_hidden_state
+
+        # Extract [CLS] token (first token)
+        xlmr_cls_features = xlmr_hidden_states[:, 0]  # Shape: [batch_size, 768]
+
+        # Apply projection only to XLM-R as shown in diagram
+        # CLIP: EOS token used directly (no projection)
+        # XLM-R: CLS -> FCT projection to match CLIP dimension
+        xlmr_projected = self.model.xlmr_text_projection(
+            xlmr_cls_features
+        )  # [batch_size, 512]
+
+        # Normalize features
+        clip_eos_norm = clip_eos_features / clip_eos_features.norm(dim=-1, keepdim=True)
+        xlmr_projected_norm = xlmr_projected / xlmr_projected.norm(dim=-1, keepdim=True)
+
+        # Calculate alignment loss (MSE between CLIP EOS and projected XLM-R features)
+        alignment_loss = torch.nn.functional.mse_loss(
+            xlmr_projected_norm, clip_eos_norm
+        )
+
+        return alignment_loss
+
     def train_epoch(self, epoch):
         """Train the model for one epoch."""
         self.model.train()
@@ -345,18 +397,21 @@ class ContrastiveTrainer:
             # Calculate current step for schedules
             step = current_step + batch_idx
 
-            # Get data from batch
-            text_input_ids = batch["input_ids"].to(self.device)
-            attention_mask = batch["attention_mask"].to(self.device)
-            token_type_ids = batch.get("token_type_ids", None)
-            if token_type_ids is not None:
-                token_type_ids = token_type_ids.to(self.device)
-            images = batch["image"].to(self.device)
-
-            # Get local crops if available
-            local_crops = batch.get("local_crops", None)
-            if local_crops is not None:
-                local_crops = local_crops.to(self.device)
+            # Get data from batch based on training stage
+            if self.training_stage == "teacher":
+                # Move parallel text data to device
+                for key in batch["text_1"]:
+                    batch["text_1"][key] = batch["text_1"][key].to(self.device)
+                for key in batch["text_2"]:
+                    batch["text_2"][key] = batch["text_2"][key].to(self.device)
+            else:
+                # Get image-text data for contrastive learning
+                text_input_ids = batch["input_ids"].to(self.device)
+                attention_mask = batch["attention_mask"].to(self.device)
+                token_type_ids = batch.get("token_type_ids", None)
+                if token_type_ids is not None:
+                    token_type_ids = token_type_ids.to(self.device)
+                images = batch["image"].to(self.device)
 
             # Forward pass with appropriate precision
             if self.use_amp:
@@ -366,44 +421,11 @@ class ContrastiveTrainer:
                     else torch.float16
                 )
                 with autocast(device_type=self.device, dtype=dtype):
-                    # Check if we're using a masked vision encoder
-                    if self.use_masking and isinstance(
-                        self.model.vision_encoder, MaskedVisionEncoder
-                    ):
-                        # Apply masking during forward pass with local crops
-                        image_features_result = self.model.vision_encoder(
-                            images,
-                            extract_type="cls_patch",
-                            apply_masking=True,
-                            step=step,
-                            total_steps=total_steps,
-                            local_crops=local_crops,
-                        )
-
-                        if isinstance(image_features_result, tuple):
-                            # Unpack the result - features and additional info
-                            image_features, mask_info = image_features_result
-                            distillation_loss = mask_info.get("distillation_loss", 0.0)
-                            masking_loss = mask_info.get("masking_loss", 0.0)
-                            original_features = mask_info.get("original_features", None)
-                        else:
-                            # If no masking was applied despite the setting
-                            image_features = image_features_result
-                            distillation_loss = 0.0
-                            masking_loss = 0.0
-                            original_features = None
-
-                        # Get text features from the model
-                        mm_texts, mm_images = self.model(
-                            text_input_ids=text_input_ids,
-                            text_token_type_ids=token_type_ids,
-                            text_attention_mask=attention_mask,
-                            image_features=images,
-                            return_embeddings_only=True,
-                        )
-
+                    if self.training_stage == "teacher":
+                        # Teacher Learning Stage: align CLIP text encoder with XLM-R text encoder
+                        loss = self._teacher_learning_step(batch)
                     else:
-                        # Regular forward pass without masking
+                        # Contrastive Learning Stage: regular contrastive learning
                         mm_texts, mm_images = self.model(
                             text_input_ids=text_input_ids,
                             image_features=images,
@@ -411,33 +433,20 @@ class ContrastiveTrainer:
                             text_token_type_ids=token_type_ids,
                             return_embeddings_only=True,
                         )
-                        distillation_loss = 0.0
-                        masking_loss = 0.0
 
-                    # Calculate contrastive loss
-                    logit_scale = self.model.logit_scale.exp()
+                        # Calculate contrastive loss
+                        logit_scale = self.model.logit_scale.exp()
 
-                    if self.loss_fn_name == "clip":
-                        contrastive_loss = self.loss_fn(
-                            mm_images, mm_texts, logit_scale
-                        )
-                    elif self.loss_fn_name == "siglip":
-                        logit_bias = self.model.logit_bias
-                        contrastive_loss = self.loss_fn(
-                            mm_images,
-                            mm_texts,
-                            logit_scale,
-                            logit_bias=logit_bias,
-                        )
-                    item_ct_loss = contrastive_loss.item()
-                    # Combine losses with specified weights: α = 1, β = 2
-                    loss = contrastive_loss
-                    if distillation_loss > 0:
-                        loss += (
-                            self.distillation_alpha * distillation_loss
-                        )  # α * distillation_loss
-                    if masking_loss > 0:
-                        loss += self.masking_beta * masking_loss  # β * masking_loss
+                        if self.loss_fn_name == "clip":
+                            loss = self.loss_fn(mm_images, mm_texts, logit_scale)
+                        elif self.loss_fn_name == "siglip":
+                            logit_bias = self.model.logit_bias
+                            loss = self.loss_fn(
+                                mm_images,
+                                mm_texts,
+                                logit_scale,
+                                logit_bias=logit_bias,
+                            )
 
                 # Scale the loss by gradient accumulation steps
                 loss = loss / self.gradient_accumulation_steps
@@ -459,18 +468,57 @@ class ContrastiveTrainer:
                     self.scaler.update()
                     self.scheduler.step()
 
-                    # Update teacher model with EMA on cosine schedule
-                    if (
-                        (
-                            (batch_idx + 1) % self.gradient_accumulation_steps == 0
-                            or batch_idx == num_batches - 1
+                    # Reset gradients
+                    self.optimizer.zero_grad()
+
+                    # Update global step only when optimizer step is performed
+                    self.global_step += 1
+            else:
+                # Regular FP32 training
+                if self.training_stage == "teacher":
+                    # Teacher Learning Stage: align CLIP text encoder with XLM-R text encoder
+                    loss = self._teacher_learning_step(batch)
+                else:
+                    # Contrastive Learning Stage: regular contrastive learning
+                    mm_texts, mm_images = self.model(
+                        text_input_ids=text_input_ids,
+                        image_features=images,
+                        text_attention_mask=attention_mask,
+                        text_token_type_ids=token_type_ids,
+                        return_embeddings_only=True,
+                    )
+
+                    # Calculate contrastive loss
+                    logit_scale = self.model.logit_scale.exp()
+
+                    if self.loss_fn_name == "clip":
+                        loss = self.loss_fn(mm_images, mm_texts, logit_scale)
+                    elif self.loss_fn_name == "siglip":
+                        logit_bias = self.model.logit_bias
+                        loss = self.loss_fn(
+                            mm_images,
+                            mm_texts,
+                            logit_scale,
+                            logit_bias=logit_bias,
                         )
-                        and self.use_masking
-                        and isinstance(self.model.vision_encoder, MaskedVisionEncoder)
-                    ):
-                        self.model.vision_encoder.update_teacher(
-                            step=step, max_steps=total_steps
-                        )
+
+                # Scale the loss by gradient accumulation steps
+                loss = loss / self.gradient_accumulation_steps
+
+                # Backward pass
+                loss.backward()
+
+                # Update weights if we've processed enough batches for accumulation or if it's the last batch
+                if (
+                    (batch_idx + 1) % self.gradient_accumulation_steps == 0
+                    or batch_idx == num_batches - 1
+                ):
+                    # Gradient clipping
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+
+                    # Optimizer step
+                    self.optimizer.step()
+                    self.scheduler.step()
 
                     # Reset gradients
                     self.optimizer.zero_grad()
@@ -480,10 +528,8 @@ class ContrastiveTrainer:
             if batch_idx % 100 == 0:
                 logger.info(
                     f"Step {batch_idx}: "
-                    f"Total: {batch_loss:.4f}, "
-                    f"Contrastive: {contrastive_loss.item():.4f}, "
-                    f"Distillation: {distillation_loss.item():.4f}, "
-                    f"Masking: {masking_loss.item():.4f}, "
+                    f"Loss: {batch_loss:.4f}, "
+                    f"Stage: {self.training_stage}, "
                     f"LR: {self.scheduler.get_last_lr()[0]:.6f}"
                 )
 
@@ -491,28 +537,15 @@ class ContrastiveTrainer:
             batch_loss = loss.item() * self.gradient_accumulation_steps
             epoch_loss += batch_loss
 
-            # Update progress bar with additional info
-            if self.use_masking and isinstance(
-                self.model.vision_encoder, MaskedVisionEncoder
-            ):
-                progress_bar.set_postfix(
-                    {
-                        "-": (
-                            f"{batch_loss:.3f}, "
-                            f"{item_ct_loss:.3f}, "
-                            f"{(self.distillation_alpha * distillation_loss.item()):.3f}, "
-                            f"{(self.masking_beta * masking_loss.item()):.3f}"
-                        )
-                    }
-                )
-            else:
-                progress_bar.set_postfix(
-                    {
-                        "train_loss": batch_loss,
-                        "lr": self.scheduler.get_last_lr()[0],
-                        "precision": self.precision,
-                    }
-                )
+            # Update progress bar
+            progress_bar.set_postfix(
+                {
+                    "loss": batch_loss,
+                    "stage": self.training_stage,
+                    "lr": self.scheduler.get_last_lr()[0],
+                    "precision": self.precision,
+                }
+            )
 
         # Calculate average epoch loss
         avg_epoch_loss = epoch_loss / num_batches
@@ -537,13 +570,21 @@ class ContrastiveTrainer:
             for batch in tqdm(
                 self.val_loader, desc="Evaluating", disable=self.rank != 0
             ):
-                # Get data from batch
-                text_input_ids = batch["input_ids"].to(self.device)
-                attention_mask = batch["attention_mask"].to(self.device)
-                token_type_ids = batch.get("token_type_ids", None)
-                if token_type_ids is not None:
-                    token_type_ids = token_type_ids.to(self.device)
-                images = batch["image"].to(self.device)
+                # Get data from batch based on training stage
+                if self.training_stage == "teacher":
+                    # Move parallel text data to device
+                    for key in batch["text_1"]:
+                        batch["text_1"][key] = batch["text_1"][key].to(self.device)
+                    for key in batch["text_2"]:
+                        batch["text_2"][key] = batch["text_2"][key].to(self.device)
+                else:
+                    # Get image-text data for contrastive learning
+                    text_input_ids = batch["input_ids"].to(self.device)
+                    attention_mask = batch["attention_mask"].to(self.device)
+                    token_type_ids = batch.get("token_type_ids", None)
+                    if token_type_ids is not None:
+                        token_type_ids = token_type_ids.to(self.device)
+                    images = batch["image"].to(self.device)
 
                 # Forward pass with appropriate precision for evaluation
                 if self.use_amp:
@@ -553,6 +594,35 @@ class ContrastiveTrainer:
                         else torch.float16
                     )
                     with autocast(device_type=self.device, dtype=dtype):
+                        if self.training_stage == "teacher":
+                            loss = self._teacher_learning_step(batch)
+                        else:
+                            text_features, image_features = self.model(
+                                text_input_ids=text_input_ids,
+                                image_features=images,
+                                text_attention_mask=attention_mask,
+                                text_token_type_ids=token_type_ids,
+                            )
+
+                            # Calculate loss
+                            logit_scale = self.model.logit_scale.exp()
+                            if self.loss_fn_name == "clip":
+                                loss = self.loss_fn(
+                                    image_features, text_features, logit_scale
+                                )
+                            elif self.loss_fn_name == "siglip":
+                                logit_bias = self.model.logit_bias
+                                loss = self.loss_fn(
+                                    image_features,
+                                    text_features,
+                                    logit_scale,
+                                    logit_bias=logit_bias,
+                                )
+                else:
+                    # Regular FP32 evaluation
+                    if self.training_stage == "teacher":
+                        loss = self._teacher_learning_step(batch)
+                    else:
                         text_features, image_features = self.model(
                             text_input_ids=text_input_ids,
                             image_features=images,
@@ -574,27 +644,6 @@ class ContrastiveTrainer:
                                 logit_scale,
                                 logit_bias=logit_bias,
                             )
-                else:
-                    # Regular FP32 evaluation
-                    text_features, image_features = self.model(
-                        text_input_ids=text_input_ids,
-                        image_features=images,
-                        text_attention_mask=attention_mask,
-                        text_token_type_ids=token_type_ids,
-                    )
-
-                    # Calculate loss
-                    logit_scale = self.model.logit_scale.exp()
-                    if self.loss_fn_name == "clip":
-                        loss = self.loss_fn(image_features, text_features, logit_scale)
-                    elif self.loss_fn_name == "siglip":
-                        logit_bias = self.model.logit_bias
-                        loss = self.loss_fn(
-                            image_features,
-                            text_features,
-                            logit_scale,
-                            logit_bias=logit_bias,
-                        )
 
                 total_loss += loss.item()
 

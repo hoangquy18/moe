@@ -98,66 +98,37 @@ def parse_args():
         help="Precision for training (fp32, fp16, or fp8)",
     )
 
-    # Self-distillation and masking arguments
+    # Two-stage training arguments
     parser.add_argument(
-        "--use_masking",
-        action="store_true",
-        help="Use masked vision encoder with self-distillation",
-    )
-    parser.add_argument(
-        "--mask_ratio",
-        type=float,
-        default=0.4,
-        help="Ratio of image tokens to mask",
-    )
-    parser.add_argument(
-        "--teacher_model_name",
+        "--training_stage",
         type=str,
+        default="contrastive",
+        choices=["teacher", "contrastive"],
+        help="Training stage: teacher (align text encoders) or contrastive (text-image pairs)",
+    )
+    parser.add_argument(
+        "--en_file_path",
+        type=str,
+        default="PhoMT/tokenization/train/train.en",
+        help="Path to English text file (.en) for teacher learning stage",
+    )
+    parser.add_argument(
+        "--vi_file_path",
+        type=str,
+        default="PhoMT/tokenization/train/train.vi",
+        help="Path to Vietnamese text file (.vi) for teacher learning stage",
+    )
+    parser.add_argument(
+        "--max_parallel_samples",
+        type=int,
         default=None,
-        help="Name of the Hugging Face model to use as teacher (larger model)",
-    )
-    parser.add_argument(
-        "--distillation_alpha",
-        type=float,
-        default=1.0,  # α = 1
-        help="Weight of distillation loss in the total loss",
-    )
-    parser.add_argument(
-        "--masking_beta",
-        type=float,
-        default=2.0,  # β = 2
-        help="Weight of masking loss in the total loss",
+        help="Maximum number of parallel text samples to use (None for all)",
     )
     parser.add_argument(
         "--warmup_epochs",
         type=float,
         default=1.4,
         help="Number of epochs for warmup",
-    )
-    parser.add_argument(
-        "--teacher_momentum_base",
-        type=float,
-        default=0.994,
-        help="Base momentum for teacher EMA",
-    )
-
-    # Local crop arguments for self-distillation
-    parser.add_argument(
-        "--use_local_crops",
-        action="store_true",
-        help="Use local crops for self-distillation comparison with teacher",
-    )
-    parser.add_argument(
-        "--num_local_crops",
-        type=int,
-        default=4,
-        help="Number of local crops to generate per image (M)",
-    )
-    parser.add_argument(
-        "--local_crop_size",
-        type=int,
-        default=98,
-        help="Size of each local crop (default: 98x98)",
     )
 
     # Distributed training arguments
@@ -206,49 +177,63 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    # Build model with enhanced configurations
+    # Build model with simplified configuration
     vision_config = VisionConfig()
-    vision_config.use_self_distillation = args.use_masking
-    vision_config.mask_ratio = args.mask_ratio
-    vision_config.teacher_momentum_base = args.teacher_momentum_base
-    vision_config.teacher_momentum_final = 1.0  # Final value is always 1.0
-    vision_config.distillation_alpha = args.distillation_alpha
-    vision_config.masking_beta = args.masking_beta
-    
-    # Add local crop configuration
-    vision_config.use_local_crops = args.use_local_crops
-    vision_config.num_local_crops = args.num_local_crops
-    vision_config.local_crop_size = args.local_crop_size
-    
-    # Add teacher model configuration
-    if args.teacher_model_name:
-        vision_config.teacher_model_name = args.teacher_model_name
-        logger.info(f"Using different teacher model: {args.teacher_model_name}")
-    
-    model = build_model(use_masking=args.use_masking, vision_config=vision_config)
+    model = build_model(vision_config=vision_config)
 
     # Initialize tokenizer from text encoder config
     tokenizer = AutoTokenizer.from_pretrained(model.text_encoder.config.text_model_name)
 
-    # Create datasets - using our contrastive dataset
-    train_dataset = ContrastiveJsonDataset(
-        json_path="moe_dataset/moe_dataset.json",
-        tokenizer=tokenizer,
-        base_image_path="moe_dataset",
-        max_length=32,  # Set appropriate max length based on model requirements
-        image_key="image_id",  # Ensure this matches your JSON structure
-        caption_key="caption",  # Ensure this matches your JSON structure
-    )
-    print(train_dataset[0])
-    val_dataset = (
-        train_dataset  # For demonstration - ideally use a separate validation set
-    )
+    # Create datasets based on training stage
+    if args.training_stage == "teacher":
+        # Teacher Learning Stage: Use PhoMT parallel text files
+        from data.contrastive_dataloader import PhoMTParallelDataset
+
+        train_dataset = PhoMTParallelDataset(
+            en_file_path=args.en_file_path,
+            vi_file_path=args.vi_file_path,
+            tokenizer=tokenizer,
+            max_length=32,
+            max_samples=args.max_parallel_samples,
+        )
+
+        # For validation, use dev set if available
+        try:
+            val_dataset = PhoMTParallelDataset(
+                en_file_path=args.en_file_path.replace("train", "dev"),
+                vi_file_path=args.vi_file_path.replace("train", "dev"),
+                tokenizer=tokenizer,
+                max_length=32,
+                max_samples=1000,  # Limit validation set size
+            )
+        except:
+            val_dataset = train_dataset  # Fallback to train set
+
+        logger.info(f"Teacher stage - Parallel text dataset size: {len(train_dataset)}")
+        logger.info(f"Validation dataset size: {len(val_dataset)}")
+    else:
+        # Contrastive Learning Stage: Use image-text pairs
+        train_dataset = ContrastiveJsonDataset(
+            json_path="moe_dataset/moe_dataset.json",
+            tokenizer=tokenizer,
+            base_image_path="moe_dataset",
+            max_length=32,  # Set appropriate max length based on model requirements
+            image_key="image_id",  # Ensure this matches your JSON structure
+            caption_key="caption",  # Ensure this matches your JSON structure
+        )
+        val_dataset = (
+            train_dataset  # For demonstration - ideally use a separate validation set
+        )
+
+        logger.info(
+            f"Contrastive stage - Image-text dataset size: {len(train_dataset)}"
+        )
+        logger.info(
+            f"Unique images in training dataset: {len(train_dataset.unique_image_ids)}"
+        )
 
     logger.info(f"Train dataset size: {len(train_dataset)}")
     logger.info(f"Validation dataset size: {len(val_dataset)}")
-    logger.info(
-        f"Unique images in training dataset: {len(train_dataset.unique_image_ids)}"
-    )
 
     # Initialize trainer with new parameters
     trainer = ContrastiveTrainer(
@@ -273,14 +258,7 @@ def main():
         num_workers=args.num_workers,
         use_controlled_negatives=args.use_controlled_negatives,
         seed=args.seed,
-        use_masking=args.use_masking,
-        mask_ratio=args.mask_ratio,
-        distillation_alpha=args.distillation_alpha,
-        masking_beta=args.masking_beta,
-        # Enable local crop creation in dataloader
-        create_local_crops=args.use_local_crops,
-        num_local_crops=args.num_local_crops,
-        local_crop_size=args.local_crop_size,
+        training_stage=args.training_stage,
     )
 
     # Start training

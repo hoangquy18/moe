@@ -24,6 +24,231 @@ except ImportError:
 from text_preprocess import TextNormalize
 
 
+class ParallelTextDataset(Dataset):
+    """Dataset for parallel text data used in the Teacher Learning Stage"""
+
+    def __init__(
+        self,
+        text_pairs_path,
+        tokenizer,
+        max_length=77,
+        preprocess_text=True,
+        text_key_1="text_en",
+        text_key_2="text_vi",
+    ):
+        """
+        Args:
+            text_pairs_path: Path to JSON file containing parallel text pairs
+            tokenizer: Tokenizer for processing text
+            max_length: Maximum length of tokenized text
+            preprocess_text: Whether to apply Vietnamese text preprocessing
+            text_key_1: Key for first text (e.g., English)
+            text_key_2: Key for second text (e.g., Vietnamese)
+        """
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.preprocess_text = preprocess_text
+        self.text_key_1 = text_key_1
+        self.text_key_2 = text_key_2
+
+        # Initialize text normalizer for Vietnamese
+        if self.preprocess_text:
+            self.text_normalizer = TextNormalize()
+            self.text_normalizer.createVowelsTable()
+
+        # Load parallel text data
+        with open(text_pairs_path, "r", encoding="utf-8") as f:
+            self.data = json.load(f)
+
+        # Convert to list if it's a dictionary
+        if isinstance(self.data, dict):
+            self.samples = list(self.data.values())
+        else:
+            self.samples = self.data
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        item = self.samples[idx]
+        text_1 = item[self.text_key_1]
+        text_2 = item[self.text_key_2]
+
+        # Preprocess text if enabled (mainly for Vietnamese)
+        if self.preprocess_text:
+            if self.text_key_2 == "text_vi" or "vi" in self.text_key_2.lower():
+                text_2 = self.text_normalizer.normalize(text_2)
+
+        # Tokenize both texts
+        encoding_1 = self.tokenizer(
+            text_1,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+
+        encoding_2 = self.tokenizer(
+            text_2,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+
+        # Remove batch dimension
+        encoding_1 = {k: v.squeeze(0) for k, v in encoding_1.items()}
+        encoding_2 = {k: v.squeeze(0) for k, v in encoding_2.items()}
+
+        return {
+            "text_1": encoding_1,
+            "text_2": encoding_2,
+            "raw_text_1": text_1,
+            "raw_text_2": text_2,
+        }
+
+
+class PhoMTParallelDataset(Dataset):
+    """Dataset for PhoMT parallel text files (.en and .vi) used in Teacher Learning Stage"""
+
+    def __init__(
+        self,
+        en_file_path,
+        vi_file_path,
+        tokenizer,
+        max_length=77,
+        preprocess_text=True,
+        max_samples=None,
+        use_dual_tokenization=True,
+    ):
+        """
+        Args:
+            en_file_path: Path to English text file (.en)
+            vi_file_path: Path to Vietnamese text file (.vi)
+            tokenizer: XLM-R tokenizer for processing text
+            max_length: Maximum length of tokenized text
+            preprocess_text: Whether to apply Vietnamese text preprocessing
+            max_samples: Maximum number of samples to load (None for all)
+            use_dual_tokenization: Whether to use both CLIP and XLM-R tokenizers
+        """
+        self.tokenizer = tokenizer  # XLM-R tokenizer
+        self.max_length = max_length
+        self.preprocess_text = preprocess_text
+        self.use_dual_tokenization = use_dual_tokenization
+
+        # Initialize CLIP tokenizer for dual tokenization
+        if self.use_dual_tokenization:
+            from transformers import CLIPTokenizer
+
+            self.clip_tokenizer = CLIPTokenizer.from_pretrained(
+                "openai/clip-vit-base-patch32"
+            )
+
+        # Initialize text normalizer for Vietnamese
+        if self.preprocess_text:
+            self.text_normalizer = TextNormalize()
+            self.text_normalizer.createVowelsTable()
+
+        # Load parallel text files
+        with open(en_file_path, "r", encoding="utf-8") as f:
+            self.en_texts = [line.strip() for line in f.readlines()]
+
+        with open(vi_file_path, "r", encoding="utf-8") as f:
+            self.vi_texts = [line.strip() for line in f.readlines()]
+
+        # Ensure both files have the same number of lines
+        assert len(self.en_texts) == len(
+            self.vi_texts
+        ), f"English file has {len(self.en_texts)} lines, Vietnamese file has {len(self.vi_texts)} lines"
+
+        # Limit samples if specified
+        if max_samples is not None:
+            self.en_texts = self.en_texts[:max_samples]
+            self.vi_texts = self.vi_texts[:max_samples]
+
+        # Filter out empty lines
+        valid_pairs = [
+            (en, vi)
+            for en, vi in zip(self.en_texts, self.vi_texts)
+            if en.strip() and vi.strip()
+        ]
+        self.en_texts, self.vi_texts = zip(*valid_pairs) if valid_pairs else ([], [])
+
+        logger.info(
+            f"Loaded {len(self.en_texts)} parallel text pairs from PhoMT dataset"
+        )
+
+    def __len__(self):
+        return len(self.en_texts)
+
+    def __getitem__(self, idx):
+        en_text = self.en_texts[idx]
+        vi_text = self.vi_texts[idx]
+
+        # Preprocess Vietnamese text if enabled
+        if self.preprocess_text:
+            vi_text = self.text_normalizer.normalize(vi_text)
+
+        if self.use_dual_tokenization:
+            # Tokenize English with CLIP tokenizer (for CLIP model)
+            en_clip_encoding = self.clip_tokenizer(
+                en_text,
+                padding="max_length",
+                truncation=True,
+                max_length=77,  # CLIP max length
+                return_tensors="pt",
+            )
+
+            # Tokenize Vietnamese with XLM-R tokenizer (for XLM-R model)
+            vi_xlmr_encoding = self.tokenizer(
+                vi_text,
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+
+            # Remove batch dimension
+            en_clip_encoding = {k: v.squeeze(0) for k, v in en_clip_encoding.items()}
+            vi_xlmr_encoding = {k: v.squeeze(0) for k, v in vi_xlmr_encoding.items()}
+
+            return {
+                "text_1": en_clip_encoding,  # English text for CLIP
+                "text_2": vi_xlmr_encoding,  # Vietnamese text for XLM-R
+                "raw_text_1": en_text,
+                "raw_text_2": vi_text,
+            }
+
+        else:
+            # Original single tokenizer approach
+            en_encoding = self.tokenizer(
+                en_text,
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+
+            vi_encoding = self.tokenizer(
+                vi_text,
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+
+            # Remove batch dimension
+            en_encoding = {k: v.squeeze(0) for k, v in en_encoding.items()}
+            vi_encoding = {k: v.squeeze(0) for k, v in vi_encoding.items()}
+
+            return {
+                "text_1": en_encoding,  # English text
+                "text_2": vi_encoding,  # Vietnamese text
+                "raw_text_1": en_text,
+                "raw_text_2": vi_text,
+            }
+
+
 class ContrastiveDataset(Dataset):
     """Base class for contrastive learning datasets that ensures proper image-text pairing"""
 
@@ -199,7 +424,9 @@ class ContrastiveJsonDataset(ContrastiveDataset):
                 if self.transform:
                     image = self.transform(image)
             else:
-                logger.info(f"Warning: Image not found at {image_path}, using empty image")
+                logger.info(
+                    f"Warning: Image not found at {image_path}, using empty image"
+                )
                 image = self._create_empty_image()
                 local_crops = None
                 if self.transform:

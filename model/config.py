@@ -4,24 +4,12 @@ from typing import Literal
 
 @dataclass
 class VisionConfig:
+    """Simplified vision configuration for two-stage training"""
+
     vision_model_name: str = "openai/clip-vit-base-patch32"
-    proj_type: Literal["patch", "cls_patch", "cls", "map", "gap"] = "patch"
-    vision_model_weights: str = "weights/vision/clip/clip-vit-base-patch32.bin"
-    load_vision_pretrained: bool = True
-    # Masking configuration
-    mask_ratio: float = 0.4
-    mask_strategy: Literal["random", "block"] = "random"
-    # Self-distillation configuration
-    use_self_distillation: bool = False
-    teacher_model_name: str = None  # Name of the teacher model (if different from student)
-    teacher_momentum_base: float = 0.994  # Initial momentum value
-    teacher_momentum_final: float = 1.0   # Final momentum value
-    distillation_alpha: float = 1.0  # α = 1, weight for distillation loss
-    masking_beta: float = 2.0        # β = 2, weight for masking loss
-    # Local crop parameters for self-distillation
-    use_local_crops: bool = True     # Whether to use local crops for self-distillation
-    num_local_crops: int = 4         # Number of local crops to use (M)
-    local_crop_size: int = 98        # Size of local crops (98x98 pixels)
+    proj_type: Literal["patch", "cls_patch", "cls", "map", "gap"] = "cls"
+    vision_model_weights: str = ""  # Path to pretrained weights (optional)
+    load_vision_pretrained: bool = True  # Load from HuggingFace by default
 
 
 @dataclass
