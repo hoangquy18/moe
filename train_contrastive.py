@@ -125,6 +125,12 @@ def parse_args():
         help="Maximum number of parallel text samples to use (None for all)",
     )
     parser.add_argument(
+        "--max_length",
+        type=int,
+        default=32,
+        help="Maximum length of tokenized text",
+    )
+    parser.add_argument(
         "--warmup_epochs",
         type=float,
         default=1.4,
@@ -193,7 +199,7 @@ def main():
             en_file_path=args.en_file_path,
             vi_file_path=args.vi_file_path,
             tokenizer=tokenizer,
-            max_length=32,
+            max_length=args.max_length,
             max_samples=args.max_parallel_samples,
         )
 
@@ -203,7 +209,7 @@ def main():
                 en_file_path=args.en_file_path.replace("train", "dev"),
                 vi_file_path=args.vi_file_path.replace("train", "dev"),
                 tokenizer=tokenizer,
-                max_length=32,
+                max_length=args.max_length,
                 max_samples=1000,  # Limit validation set size
             )
         except:
@@ -217,7 +223,7 @@ def main():
             json_path="moe_dataset/moe_dataset.json",
             tokenizer=tokenizer,
             base_image_path="moe_dataset",
-            max_length=32,  # Set appropriate max length based on model requirements
+            max_length=args.max_length,  # Set appropriate max length based on model requirements
             image_key="image_id",  # Ensure this matches your JSON structure
             caption_key="caption",  # Ensure this matches your JSON structure
         )
