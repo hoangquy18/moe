@@ -525,6 +525,10 @@ class ContrastiveTrainer:
 
                     # Update global step only when optimizer step is performed
                     self.global_step += 1
+
+            # For logging, use the unscaled loss value
+            batch_loss = loss.item() * self.gradient_accumulation_steps
+
             if batch_idx % 100 == 0:
                 logger.info(
                     f"Step {batch_idx}: "
@@ -532,9 +536,6 @@ class ContrastiveTrainer:
                     f"Stage: {self.training_stage}, "
                     f"LR: {self.scheduler.get_last_lr()[0]:.6f}"
                 )
-
-            # For logging, use the unscaled loss value
-            batch_loss = loss.item() * self.gradient_accumulation_steps
             epoch_loss += batch_loss
 
             # Update progress bar
