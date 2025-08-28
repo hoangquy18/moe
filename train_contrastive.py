@@ -245,7 +245,7 @@ def main():
     trainer = ContrastiveTrainer(
         model=model,
         train_dataset=train_dataset,
-        val_dataset=val_dataset,
+        val_dataset=None,
         loss_fn=args.loss_fn,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
