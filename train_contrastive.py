@@ -206,7 +206,7 @@ def main():
         checkpoint = torch.load(args.stage1_checkpoint, map_location="cpu")
 
         # Load only the model state dict (not optimizer, scheduler, etc.)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(checkpoint["model_state_dict"], strict=False)
         logger.info("Successfully loaded stage 1 model weights for stage 2 training")
 
         # Log some info about the loaded checkpoint

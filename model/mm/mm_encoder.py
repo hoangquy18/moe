@@ -35,7 +35,7 @@ class MultiModalEncoder(nn.Module):
         )  # 768 -> 512
 
         self.vision_projection_output = nn.Linear(clip_text_dim, xlmr_text_dim)
-        self.text_projection_output = nn.Linear(xlmr_text_dim, xlmr_text_dim)
+        self.text_projection_output = nn.Linear(clip_text_dim, xlmr_text_dim)
 
         # Optionally freeze other components
         if config.text_frozen:
