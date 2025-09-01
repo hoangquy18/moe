@@ -27,6 +27,7 @@ class MultiModalEncoder(nn.Module):
         # CLIP: EOS token features used directly (no projection)
         # XLM-R: CLS token features -> FCT projection
         clip_text_dim = self.vision_text_model.config.text_config.hidden_size  # 512
+        clip_vision_dim = self.vision_text_model.config.vision_config.hidden_size  # 768
         xlmr_text_dim = text_encoder.text_config.hidden_size  # 768
 
         # Only XLM-R needs projection to align with CLIP dimension
@@ -34,7 +35,7 @@ class MultiModalEncoder(nn.Module):
             xlmr_text_dim, clip_text_dim
         )  # 768 -> 512
 
-        self.vision_projection_output = nn.Linear(clip_text_dim, xlmr_text_dim)
+        self.vision_projection_output = nn.Linear(clip_vision_dim, xlmr_text_dim)
         self.text_projection_output = nn.Linear(clip_text_dim, xlmr_text_dim)
 
         # Optionally freeze other components
@@ -138,7 +139,9 @@ class MultiModalEncoder(nn.Module):
             attention_mask=text_attention_mask,
         )
 
-        image_features = self.vision_encoder(image_features)
+        image_features = self.vision_text_model.vision_model(
+            image_features
+        ).last_hidden_state  # [Batch_size, hidden_size]
 
         # normalized features
         text_features = self.feature_extraction(text_features, "cls")
