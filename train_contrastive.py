@@ -107,6 +107,12 @@ def parse_args():
         help="Training stage: teacher (align text encoders) or contrastive (text-image pairs)",
     )
     parser.add_argument(
+        "--stage1_checkpoint",
+        type=str,
+        default=None,
+        help="Path to stage 1 (teacher) checkpoint to load for stage 2 (contrastive) training",
+    )
+    parser.add_argument(
         "--en_file_path",
         type=str,
         default="PhoMT/tokenization/train/train.en",
@@ -186,6 +192,28 @@ def main():
     # Build model with simplified configuration
     vision_config = VisionConfig()
     model = build_model(vision_config=vision_config)
+
+    # Load stage 1 checkpoint if specified and we're in stage 2
+    if args.training_stage == "contrastive" and args.stage1_checkpoint:
+        logger.info(f"Loading stage 1 checkpoint from {args.stage1_checkpoint}")
+
+        if not os.path.exists(args.stage1_checkpoint):
+            raise FileNotFoundError(
+                f"Stage 1 checkpoint not found: {args.stage1_checkpoint}"
+            )
+
+        # Load the checkpoint
+        checkpoint = torch.load(args.stage1_checkpoint, map_location="cpu")
+
+        # Load only the model state dict (not optimizer, scheduler, etc.)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        logger.info("Successfully loaded stage 1 model weights for stage 2 training")
+
+        # Log some info about the loaded checkpoint
+        if "epoch" in checkpoint:
+            logger.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+        if "val_loss" in checkpoint and checkpoint["val_loss"] is not None:
+            logger.info(f"Stage 1 final validation loss: {checkpoint['val_loss']:.4f}")
 
     # Initialize tokenizer from text encoder config
     tokenizer = AutoTokenizer.from_pretrained(model.text_encoder.config.text_model_name)

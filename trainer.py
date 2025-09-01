@@ -316,6 +316,34 @@ class ContrastiveTrainer:
         )
         return checkpoint["epoch"]
 
+    def load_stage1_weights(self, stage1_checkpoint_path):
+        """
+        Load only model weights from stage 1 checkpoint for stage 2 training.
+        This method loads only the model state dict without optimizer, scheduler, or other training states.
+        """
+        if not os.path.exists(stage1_checkpoint_path):
+            raise FileNotFoundError(
+                f"Stage 1 checkpoint not found: {stage1_checkpoint_path}"
+            )
+
+        logger.info(f"Loading stage 1 model weights from {stage1_checkpoint_path}")
+
+        # Load checkpoint
+        checkpoint = torch.load(stage1_checkpoint_path, map_location=self.device)
+
+        # Load only model weights
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+
+        # Log information about the loaded checkpoint
+        if "epoch" in checkpoint:
+            logger.info(f"Loaded stage 1 weights from epoch {checkpoint['epoch']}")
+        if "val_loss" in checkpoint and checkpoint["val_loss"] is not None:
+            logger.info(f"Stage 1 final validation loss: {checkpoint['val_loss']:.4f}")
+
+        logger.info("Successfully loaded stage 1 model weights for stage 2 training")
+
+        return checkpoint.get("epoch", -1)
+
     def _teacher_learning_step(self, batch):
         """
         Teacher Learning Stage: Align CLIP text encoder with XLM-R text encoder using parallel text.
