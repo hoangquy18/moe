@@ -34,6 +34,9 @@ class MultiModalEncoder(nn.Module):
             xlmr_text_dim, clip_text_dim
         )  # 768 -> 512
 
+        self.vision_projection_output = nn.Linear(clip_text_dim, xlmr_text_dim)
+        self.text_projection_output = nn.Linear(xlmr_text_dim, xlmr_text_dim)
+
         # Optionally freeze other components
         if config.text_frozen:
             for param in self.text_encoder.parameters():
@@ -139,7 +142,11 @@ class MultiModalEncoder(nn.Module):
 
         # normalized features
         text_features = self.feature_extraction(text_features, "cls")
+        text_features = self.xlmr_text_projection(text_features)  # [batch_size, 512
+        text_features = self.text_projection_output(text_features)
+
         image_features = self.feature_extraction(image_features, "cls")
+        image_features = self.vision_projection_output(image_features)
 
         mm_images = image_features / image_features.norm(dim=-1, keepdim=True)
         mm_texts = text_features / text_features.norm(dim=-1, keepdim=True)
