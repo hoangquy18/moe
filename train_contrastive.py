@@ -95,7 +95,6 @@ def parse_args():
         type=float,
         default=1.0,
         help="Gradient norm to clip",
-        default=1.0,
     )
     parser.add_argument(
         "--precision",
