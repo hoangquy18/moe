@@ -195,7 +195,7 @@ class ContrastiveTrainer:
             self.val_loader = None
 
         # Initialize optimizer - using Adafactor as specified
-        self.optimizer = optim.Adafactor(
+        self.optimizer = optim.AdamW(
             model.parameters(),
             lr=learning_rate,
             weight_decay=self.weight_decay,
