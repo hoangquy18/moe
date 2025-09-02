@@ -91,6 +91,13 @@ def parse_args():
         help="Loss function to use",
     )
     parser.add_argument(
+        "--grad_norm",
+        type=float,
+        default=1.0,
+        help="Gradient norm to clip",
+        default=1.0,
+    )
+    parser.add_argument(
         "--precision",
         type=str,
         default="fp16",
@@ -275,6 +282,7 @@ def main():
         train_dataset=train_dataset,
         val_dataset=None,
         loss_fn=args.loss_fn,
+        grad_norm=args.grad_norm,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,

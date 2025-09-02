@@ -106,6 +106,7 @@ class ContrastiveTrainer:
         use_controlled_negatives=False,
         seed=42,
         training_stage="contrastive",  # "teacher" or "contrastive"
+        grad_norm=1.0,
     ):
         self.model = model.to(device)
         self.train_dataset = train_dataset
@@ -129,7 +130,7 @@ class ContrastiveTrainer:
         self.seed = seed
         self.training_stage = training_stage
         self.warmup_epochs = warmup_epochs
-
+        self.grad_norm = grad_norm
         # Set up mixed precision training
         self.use_amp = precision != "fp32" and device != "cpu"
         if self.use_amp:
@@ -489,7 +490,9 @@ class ContrastiveTrainer:
                 ):
                     # Gradient clipping with scaler
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.grad_norm
+                    )
 
                     # Optimizer step with scaler
                     self.scaler.step(self.optimizer)
@@ -542,7 +545,9 @@ class ContrastiveTrainer:
                     or batch_idx == num_batches - 1
                 ):
                     # Gradient clipping
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.grad_norm
+                    )
 
                     # Optimizer step
                     self.optimizer.step()
