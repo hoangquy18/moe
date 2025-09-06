@@ -238,7 +238,6 @@ def main():
         )
 
         logger.info(f"Teacher stage - Parallel text dataset size: {len(train_dataset)}")
-        logger.info(f"Validation dataset size: {len(val_dataset)}")
     else:
         # Contrastive Learning Stage: Use image-text pairs
         train_dataset = ContrastiveJsonDataset(
@@ -258,7 +257,6 @@ def main():
         )
 
     logger.info(f"Train dataset size: {len(train_dataset)}")
-    logger.info(f"Validation dataset size: {len(val_dataset)}")
 
     # Initialize trainer with new parameters
     trainer = ContrastiveTrainer(
