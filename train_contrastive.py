@@ -237,18 +237,6 @@ def main():
             max_samples=args.max_parallel_samples,
         )
 
-        # For validation, use dev set if available
-        try:
-            val_dataset = PhoMTParallelDataset(
-                en_file_path=args.en_file_path.replace("train", "dev"),
-                vi_file_path=args.vi_file_path.replace("train", "dev"),
-                tokenizer=tokenizer,
-                max_length=args.max_length,
-                max_samples=1000,  # Limit validation set size
-            )
-        except:
-            val_dataset = train_dataset  # Fallback to train set
-
         logger.info(f"Teacher stage - Parallel text dataset size: {len(train_dataset)}")
         logger.info(f"Validation dataset size: {len(val_dataset)}")
     else:
@@ -260,9 +248,6 @@ def main():
             max_length=args.max_length,  # Set appropriate max length based on model requirements
             image_key="image_id",  # Ensure this matches your JSON structure
             caption_key="caption",  # Ensure this matches your JSON structure
-        )
-        val_dataset = (
-            train_dataset  # For demonstration - ideally use a separate validation set
         )
 
         logger.info(
