@@ -213,13 +213,22 @@ def main():
 
         # Load only the model state dict (not optimizer, scheduler, etc.)
         model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+
+        # Extract information before clearing checkpoint to free memory
+        epoch = checkpoint.get("epoch", -1)
+        val_loss = checkpoint.get("val_loss", None)
+
+        # Clear checkpoint from memory to reduce RAM usage
+        del checkpoint
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
         logger.info("Successfully loaded stage 1 model weights for stage 2 training")
 
         # Log some info about the loaded checkpoint
-        if "epoch" in checkpoint:
-            logger.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
-        if "val_loss" in checkpoint and checkpoint["val_loss"] is not None:
-            logger.info(f"Stage 1 final validation loss: {checkpoint['val_loss']:.4f}")
+        if epoch != -1:
+            logger.info(f"Loaded checkpoint from epoch {epoch}")
+        if val_loss is not None:
+            logger.info(f"Stage 1 final validation loss: {val_loss:.4f}")
 
     # Initialize tokenizer from text encoder config
     tokenizer = AutoTokenizer.from_pretrained(model.text_encoder.config.text_model_name)

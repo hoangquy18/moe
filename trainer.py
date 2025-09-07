@@ -125,7 +125,10 @@ class ContrastiveTrainer:
         self.world_size = world_size
         self.gradient_accumulation_steps = max(1, gradient_accumulation_steps)
         self.precision = precision
-        self.num_workers = num_workers
+        # Reduce num_workers when using gradient accumulation to save RAM
+        self.num_workers = (
+            min(num_workers, 2) if gradient_accumulation_steps > 1 else num_workers
+        )
         self.use_controlled_negatives = use_controlled_negatives
         self.seed = seed
         self.training_stage = training_stage
@@ -167,7 +170,9 @@ class ContrastiveTrainer:
                 batch_size=batch_size,
                 shuffle=not use_distributed,
                 num_workers=self.num_workers,
-                pin_memory=True,
+                pin_memory=(
+                    False if gradient_accumulation_steps > 1 else True
+                ),  # Disable pin_memory to save RAM
             )
         else:
             # For contrastive learning stage, use specialized contrastive dataloader
@@ -176,7 +181,9 @@ class ContrastiveTrainer:
                 batch_size=batch_size,
                 shuffle=not use_distributed,
                 num_workers=self.num_workers,
-                pin_memory=True,
+                pin_memory=(
+                    False if gradient_accumulation_steps > 1 else True
+                ),  # Disable pin_memory to save RAM
                 use_controlled_negatives=self.use_controlled_negatives,
                 seed=self.seed,
             )
@@ -187,7 +194,9 @@ class ContrastiveTrainer:
                 batch_size=batch_size,
                 shuffle=False,
                 num_workers=self.num_workers,
-                pin_memory=True,
+                pin_memory=(
+                    False if gradient_accumulation_steps > 1 else True
+                ),  # Disable pin_memory to save RAM
                 use_controlled_negatives=self.use_controlled_negatives,
                 seed=self.seed,
             )
@@ -312,10 +321,15 @@ class ContrastiveTrainer:
         if self.scaler is not None and "scaler_state_dict" in checkpoint:
             self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
-        logger.info(
-            f"Loaded checkpoint from {checkpoint_path} (epoch {checkpoint['epoch']})"
-        )
-        return checkpoint["epoch"]
+        # Extract epoch before clearing checkpoint to free memory
+        epoch = checkpoint["epoch"]
+
+        # Clear checkpoint from memory to reduce RAM usage
+        del checkpoint
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+        logger.info(f"Loaded checkpoint from {checkpoint_path} (epoch {epoch})")
+        return epoch
 
     def load_stage1_weights(self, stage1_checkpoint_path):
         """
@@ -335,15 +349,23 @@ class ContrastiveTrainer:
         # Load only model weights
         self.model.load_state_dict(checkpoint["model_state_dict"])
 
+        # Extract information before clearing checkpoint to free memory
+        epoch = checkpoint.get("epoch", -1)
+        val_loss = checkpoint.get("val_loss", None)
+
         # Log information about the loaded checkpoint
-        if "epoch" in checkpoint:
-            logger.info(f"Loaded stage 1 weights from epoch {checkpoint['epoch']}")
-        if "val_loss" in checkpoint and checkpoint["val_loss"] is not None:
-            logger.info(f"Stage 1 final validation loss: {checkpoint['val_loss']:.4f}")
+        if epoch != -1:
+            logger.info(f"Loaded stage 1 weights from epoch {epoch}")
+        if val_loss is not None:
+            logger.info(f"Stage 1 final validation loss: {val_loss:.4f}")
+
+        # Clear checkpoint from memory to reduce RAM usage
+        del checkpoint
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
         logger.info("Successfully loaded stage 1 model weights for stage 2 training")
 
-        return checkpoint.get("epoch", -1)
+        return epoch
 
     def _teacher_learning_step(self, batch):
         """
@@ -569,6 +591,12 @@ class ContrastiveTrainer:
                     f"Stage: {self.training_stage}, "
                     f"LR: {self.scheduler.get_last_lr()[0]:.6f}"
                 )
+
+                # Force garbage collection every 100 steps to free RAM
+                import gc
+
+                gc.collect()
+
             epoch_loss += batch_loss
 
             # Update progress bar
@@ -588,6 +616,11 @@ class ContrastiveTrainer:
         logger.info(
             f"Epoch {epoch} completed in {epoch_time:.2f}s - avg train loss: {avg_epoch_loss:.4f}"
         )
+
+        # Force garbage collection after each epoch to free RAM
+        import gc
+
+        gc.collect()
 
         return avg_epoch_loss
 

@@ -23,6 +23,7 @@ except ImportError:
 
 from text_preprocess import TextNormalize
 
+
 class PhoMTParallelDataset(Dataset):
     """Dataset for PhoMT parallel text files (.en and .vi) used in Teacher Learning Stage"""
 
@@ -159,8 +160,6 @@ class PhoMTParallelDataset(Dataset):
             return {
                 "text_1": en_encoding,  # English text
                 "text_2": vi_encoding,  # Vietnamese text
-                "raw_text_1": en_text,
-                "raw_text_2": vi_text,
             }
 
 
@@ -375,6 +374,7 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         encoding["image_id"] = item[self.image_key]
 
         return encoding
+
 
 class UniqueImageBatchSampler(Sampler):
     """
