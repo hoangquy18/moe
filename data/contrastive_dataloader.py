@@ -234,6 +234,7 @@ class ContrastiveJsonDataset(ContrastiveDataset):
         if self.use_clip_processor and CLIP_AVAILABLE:
             _, self.clip_preprocess = clip.load("ViT-B/32", device="cpu")
             self.transform = self.clip_preprocess
+            logger.info("Use CLIP processor")
         elif transform is None:
             self.transform = transforms.Compose(
                 [
@@ -547,31 +548,27 @@ def create_contrastive_dataloader(
         num_local_crops: Number of local crops to generate per image
         local_crop_size: Size of each local crop
     """
-    # If the dataset supports local crops, configure it
-    if hasattr(dataset, "create_local_crops"):
-        dataset.create_local_crops = create_local_crops
-        dataset.num_local_crops = num_local_crops
-        dataset.local_crop_size = local_crop_size
 
-    # Use the new sampler that ensures unique images per batch
-    sampler = UniqueImageBatchSampler(
-        dataset=dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        drop_last=drop_last,
-        seed=seed,
-    )
+    # # Use the new sampler that ensures unique images per batch
+    # sampler = UniqueImageBatchSampler(
+    #     dataset=dataset,
+    #     batch_size=batch_size,
+    #     shuffle=shuffle,
+    #     drop_last=drop_last,
+    #     seed=seed,
+    # )
 
-    collator = ContrastiveCollator(
-        tokenizer=tokenizer, use_controlled_negatives=use_controlled_negatives
-    )
+    # collator = ContrastiveCollator(
+    #     tokenizer=tokenizer, use_controlled_negatives=use_controlled_negatives
+    # )
 
     dataloader = DataLoader(
         dataset,
-        batch_sampler=sampler,
+        # batch_sampler=sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        collate_fn=collator,
+        # collate_fn=collator,
+        batch_size = batch_size
     )
 
     return dataloader
