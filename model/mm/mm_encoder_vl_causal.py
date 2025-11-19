@@ -234,9 +234,16 @@ class ImageTextMultiModalForCausalLM(nn.Module):
 
         lm_loss = None
         if labels is not None:
+            # Get text sequence length (image embeddings are concatenated after text)
+            text_seq_len = input_ids.shape[1]
+
+            # Only get prediction scores for text tokens (exclude image embeddings)
+            prediction_scores_text = prediction_scores[:, :text_seq_len, :]
+
             # Shift prediction scores and labels for next-token prediction
-            shifted_prediction_scores = prediction_scores[:, :-1, :].contiguous()
+            shifted_prediction_scores = prediction_scores_text[:, :-1, :].contiguous()
             labels = labels[:, 1:].contiguous()
+
             loss_fct = nn.CrossEntropyLoss()
             lm_loss = loss_fct(
                 shifted_prediction_scores.view(-1, self.config.vocab_size),
