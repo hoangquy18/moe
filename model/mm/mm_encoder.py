@@ -19,9 +19,9 @@ class MultiModalEncoder(nn.Module):
             "openai/clip-vit-base-patch32"
         )
 
-        # Freeze CLIP model parameters (they serve as frozen teacher)
-        for param in self.vision_text_model.parameters():
-            param.requires_grad = False
+        # # Freeze CLIP model parameters (they serve as frozen teacher)
+        # for param in self.vision_text_model.parameters():
+        #     param.requires_grad = False
 
         # Add projection head for Stage 1 alignment (only for XLM-R)
         # CLIP: EOS token features used directly (no projection)
@@ -37,14 +37,6 @@ class MultiModalEncoder(nn.Module):
 
         self.vision_projection_output = nn.Linear(clip_vision_dim, xlmr_text_dim)
         self.text_projection_output = nn.Linear(clip_text_dim, xlmr_text_dim)
-
-        # Optionally freeze other components
-        if config.text_frozen:
-            for param in self.text_encoder.parameters():
-                param.requires_grad = False
-        if config.vision_frozen:
-            for param in self.vision_encoder.parameters():
-                param.requires_grad = False
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.logit_bias = nn.Parameter(torch.ones([]) * -10)
@@ -155,7 +147,32 @@ class MultiModalEncoder(nn.Module):
         mm_texts = text_features / text_features.norm(dim=-1, keepdim=True)
 
         if return_embeddings_only:
-            return mm_texts, mm_images
+            return text_features, image_features
 
         # Get optimized features and contrastive information
         return self.contrastive_encoding(mm_texts, mm_images)
+
+    def get_text_features(
+        self, text_input_ids, text_attention_mask=None, text_token_type_ids=None
+    ):
+        text_features = self.text_encoder(
+            input_ids=text_input_ids,
+            token_type_ids=text_token_type_ids,
+            attention_mask=text_attention_mask,
+        )
+
+        pooled_output = self.feature_extraction(text_features, "cls")
+        pooled_output = self.xlmr_text_projection(pooled_output)  # [batch_size, 512
+        pooled_output = self.text_projection_output(pooled_output)
+
+        return text_features, pooled_output
+
+    def get_image_features(self, image_features):
+        image_features = self.vision_text_model.vision_model(
+            image_features
+        ).last_hidden_state  # [Batch_size, hidden_size]
+
+        pooled_output = self.feature_extraction(image_features, "cls")
+        pooled_output = self.vision_projection_output(pooled_output)
+
+        return image_features, pooled_output
