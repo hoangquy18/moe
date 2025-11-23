@@ -14,17 +14,46 @@ from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 
 # Try different import paths for generation utilities depending on transformers version
 try:
-    from transformers.generation_logits_process import LogitsProcessorList
+    from transformers.generation_logits_process import (
+        LogitsProcessorList,
+        RepetitionPenaltyLogitsProcessor,
+    )
 except ImportError:
     try:
-        from transformers import LogitsProcessorList
+        from transformers import LogitsProcessorList, RepetitionPenaltyLogitsProcessor
     except ImportError:
-        # Fallback: simple implementation
-        class LogitsProcessorList(list):
-            def __call__(self, input_ids, scores):
-                for processor in self:
-                    scores = processor(input_ids, scores)
-                return scores
+        try:
+            from transformers.generation.logits_process import (
+                LogitsProcessorList,
+                RepetitionPenaltyLogitsProcessor,
+            )
+        except ImportError:
+            # Fallback: simple implementation
+            class LogitsProcessorList(list):
+                def __call__(self, input_ids, scores):
+                    for processor in self:
+                        scores = processor(input_ids, scores)
+                    return scores
+
+            # Fallback: simple RepetitionPenaltyLogitsProcessor
+            class RepetitionPenaltyLogitsProcessor:
+                def __init__(self, penalty: float = 1.0):
+                    if not isinstance(penalty, float) or not (penalty > 0):
+                        raise ValueError(
+                            f"`penalty` has to be a strictly positive float, but is {penalty}"
+                        )
+                    self.penalty = penalty
+
+                def __call__(
+                    self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+                ) -> torch.FloatTensor:
+                    score = torch.gather(scores, 1, input_ids)
+                    # if score < 0 then repetition penalty has to be multiplied to reduce the token probability
+                    score = torch.where(
+                        score < 0, score * self.penalty, score / self.penalty
+                    )
+                    scores.scatter_(1, input_ids, score)
+                    return scores
 
 
 try:
@@ -420,6 +449,7 @@ class ImageTextMultiModalForCausalLM(nn.Module):
         output_scores: Optional[bool] = None,
         return_dict_in_generate: Optional[bool] = None,
         synced_gpus: Optional[bool] = False,
+        repetition_penalty: Optional[float] = None,
         **model_kwargs,
     ) -> Union[GreedySearchOutput, torch.LongTensor]:
         """
@@ -429,6 +459,13 @@ class ImageTextMultiModalForCausalLM(nn.Module):
         logits_processor = (
             logits_processor if logits_processor is not None else LogitsProcessorList()
         )
+
+        # Add repetition penalty if specified
+        if repetition_penalty is not None and repetition_penalty != 1.0:
+            logits_processor.append(
+                RepetitionPenaltyLogitsProcessor(penalty=repetition_penalty)
+            )
+
         stopping_criteria = (
             stopping_criteria
             if stopping_criteria is not None
@@ -589,6 +626,7 @@ class ImageTextMultiModalForCausalLM(nn.Module):
         output_scores: Optional[bool] = None,
         return_dict_in_generate: Optional[bool] = None,
         synced_gpus: Optional[bool] = False,
+        repetition_penalty: Optional[float] = None,
         **model_kwargs,
     ) -> Union[BeamSearchOutput, torch.LongTensor]:
         """
@@ -598,6 +636,13 @@ class ImageTextMultiModalForCausalLM(nn.Module):
         logits_processor = (
             logits_processor if logits_processor is not None else LogitsProcessorList()
         )
+
+        # Add repetition penalty if specified
+        if repetition_penalty is not None and repetition_penalty != 1.0:
+            logits_processor.append(
+                RepetitionPenaltyLogitsProcessor(penalty=repetition_penalty)
+            )
+
         stopping_criteria = (
             stopping_criteria
             if stopping_criteria is not None
