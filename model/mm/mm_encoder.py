@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Literal, Dict, Optional, Tuple
-from model.modeling import MLP, MultiheadAttentionPoolingHead
 from transformers import CLIPModel
 
 
@@ -49,10 +48,6 @@ class MultiModalEncoder(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.logit_bias = nn.Parameter(torch.ones([]) * -10)
 
-        self.proj_type = config.proj_type
-        if self.proj_type == "map":
-            self.map_head = MultiheadAttentionPoolingHead(config)
-
     def feature_extraction(
         self,
         hidden_states: torch.Tensor,
@@ -65,8 +60,6 @@ class MultiModalEncoder(nn.Module):
             hidden_states = hidden_states[:, 0]
         elif extract_type == "cls_patch":
             hidden_states = hidden_states
-        elif extract_type == "map":
-            hidden_states = self.map_head(hidden_states)
         elif extract_type == "gap":
             hidden_states = torch.mean(hidden_states, dim=1)
         else:
