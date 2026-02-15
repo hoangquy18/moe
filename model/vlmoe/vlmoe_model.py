@@ -367,15 +367,30 @@ class VLMoEModel(nn.Module):
 
         # ==================== MoE Processing ====================
         if use_moe and visual_hidden is not None:
-            # Compress visual tokens
-            visual_tokens = self.visual_projector(visual_hidden)  # [B, 64, 768]
+            # Project visual tokens through vision_projection_output (match dense model)
+            # This ensures distribution matches what MoE experts were initialized from
+            visual_hidden_projected = self.vision_projection_output(
+                visual_hidden
+            )  # [B, 50, 768]
+
+            # Compress visual tokens after projection
+            visual_tokens = self.visual_projector(
+                visual_hidden_projected
+            )  # [B, 64, 768]
             num_visual = visual_tokens.shape[1]
 
-            # Use text CLS token expanded or all text tokens
+            # Project text tokens through text projections (match dense model)
+            # This ensures distribution matches what MoE experts were initialized from
             if text_hidden is not None:
-                text_tokens = text_hidden  # [B, T, 768]
+                # text_hidden: [B, T, 768] from XLM-R
+                # Project each token: 768 -> 512 -> 768 (same as dense model)
+                text_hidden_512 = self.xlmr_text_projection(text_hidden)  # [B, T, 512]
+                text_tokens = self.text_projection_output(
+                    text_hidden_512
+                )  # [B, T, 768]
                 num_text = text_tokens.shape[1]
             else:
+                # Use projected CLS token (already projected in encode_text)
                 text_tokens = text_cls.unsqueeze(1)  # [B, 1, 768]
                 num_text = 1
 
@@ -476,23 +491,6 @@ class VLMoEModel(nn.Module):
             }
         else:
             return total_loss, logits_per_image
-
-    def forward_original(
-        self,
-        text_input_ids: torch.Tensor,
-        image_features: torch.Tensor,
-        text_attention_mask: Optional[torch.Tensor] = None,
-    ):
-        """
-        Original mm_encoder.py style forward (for compatibility).
-        No MoE, just the trained encoders + projections.
-        """
-        return self.forward(
-            pixel_values=image_features,
-            input_ids=text_input_ids,
-            attention_mask=text_attention_mask,
-            use_moe=False,
-        )
 
 
 def print_architecture():
