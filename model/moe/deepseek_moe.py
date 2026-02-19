@@ -29,14 +29,6 @@ class DeepSeekMoEConfig:
         Overloaded experts get lower bias → less likely to be chosen.
         Eliminates the need for load_balance_weight tuning.
 
-    Routing Modes
-    -------------
-    Token Choice (default): Each token selects top-k experts.
-    Expert Choice (routing_mode="expert_choice"):
-        Each expert selects top-c tokens (c = capacity).
-        Guarantees perfect load balance. No token dropping needed.
-        Note: some tokens may not be routed to any expert.
-
     Expert Capacity
     ---------------
     capacity_factor > 0 enables per-expert token limits.
@@ -53,10 +45,7 @@ class DeepSeekMoEConfig:
 
     # Routed experts
     num_routed_experts: int = 64
-    num_experts_per_tok: int = 2  # Top-k routing (token choice)
-
-    # Routing mode
-    routing_mode: str = "token_choice"  # "token_choice" | "expert_choice"
+    num_experts_per_tok: int = 2  # Top-k routing
 
     # Routing configuration
     routed_scaling_factor: float = 1.0
@@ -235,7 +224,7 @@ class DeepSeekMoELayer(nn.Module):
     Architecture
     ============
     - Shared Experts  (num_shared_experts): Always active for every token.
-    - Routed Experts  (num_routed_experts): Selected via routing (token-choice or expert-choice).
+    - Routed Experts  (num_routed_experts): Selected via top-k token-choice routing.
 
     Tensor Flow
     ===========
@@ -371,101 +360,6 @@ class DeepSeekMoELayer(nn.Module):
 
         return routed_output_flat
 
-    def _dispatch_expert_choice(
-        self,
-        hidden_states_flat: torch.Tensor,  # [num_tokens, H]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Expert-choice routing dispatch (alternative to token-choice).
-
-        Each expert selects the top-c tokens it wants to process.
-        c = capacity_factor * num_tokens / num_experts  (must set capacity_factor > 0)
-
-        Advantages over token-choice:
-          - Guarantees perfectly uniform expert load (no token dropping needed).
-          - Naturally avoids expert collapse.
-        Disadvantage:
-          - Some tokens may not be routed to ANY expert (they only get shared expert output).
-          - Requires capacity_factor to be set.
-
-        Returns:
-            routed_output_flat: [num_tokens, H]
-            topk_idx:           [num_tokens, top_k]  (fake, for aux loss compat)
-            topk_weight:        [num_tokens, top_k]
-        """
-        num_tokens, hidden_size = hidden_states_flat.shape
-        num_experts = self.config.num_routed_experts
-        device = hidden_states_flat.device
-
-        # Capacity: how many tokens each expert processes
-        if self.config.capacity_factor > 0:
-            capacity = max(
-                int(self.config.capacity_factor * num_tokens / num_experts),
-                self.config.min_capacity,
-            )
-        else:
-            # Default: same total assignments as token-choice top-k
-            capacity = max(
-                int(num_tokens * self.config.num_experts_per_tok / num_experts),
-                self.config.min_capacity,
-            )
-
-        # Compute routing scores for all (token, expert) pairs
-        router_logits_2d = self.router.gate(
-            hidden_states_flat
-        )  # [num_tokens, num_experts]
-        routing_scores = self.router._compute_scores(
-            router_logits_2d
-        )  # [num_tokens, num_experts]
-
-        routed_output_flat = torch.zeros_like(hidden_states_flat)
-
-        # Build fake topk_idx / topk_weight for aux loss compatibility
-        # We approximate: for each token, record which experts chose it
-        token_expert_assignment = torch.full(
-            (num_tokens, self.config.num_experts_per_tok),
-            fill_value=-1,
-            dtype=torch.long,
-            device=device,
-        )
-        token_expert_weights = torch.zeros(
-            num_tokens, self.config.num_experts_per_tok, device=device
-        )
-
-        for expert_idx in range(num_experts):
-            # Expert selects top-c tokens by routing score
-            scores_for_expert = routing_scores[:, expert_idx]  # [num_tokens]
-            _, chosen_token_idx = torch.topk(
-                scores_for_expert, k=capacity, dim=0
-            )  # [capacity]
-
-            chosen_weights = scores_for_expert[chosen_token_idx]  # [capacity]
-            expert_input = hidden_states_flat[chosen_token_idx]  # [capacity, H]
-            expert_output = self.routed_experts[expert_idx](expert_input)
-
-            # Accumulate (tokens may be chosen by multiple experts)
-            routed_output_flat.scatter_add_(
-                0,
-                chosen_token_idx.unsqueeze(-1).expand(-1, hidden_size),
-                chosen_weights.unsqueeze(-1) * expert_output,
-            )
-
-            # Record assignment for aux loss (fill first available slot)
-            for slot in range(self.config.num_experts_per_tok):
-                empty_slots = token_expert_assignment[chosen_token_idx, slot] == -1
-                if empty_slots.any():
-                    mask_indices = chosen_token_idx[empty_slots]
-                    token_expert_assignment[mask_indices, slot] = expert_idx
-                    token_expert_weights[mask_indices, slot] = chosen_weights[
-                        empty_slots
-                    ]
-                    break
-
-        # Fill unassigned slots with 0 for compat
-        token_expert_assignment[token_expert_assignment == -1] = 0
-
-        return routed_output_flat, token_expert_assignment, token_expert_weights
-
     # ──────────────────────────────────────────────────────────────────────────
     # Forward
     # ──────────────────────────────────────────────────────────────────────────
@@ -495,19 +389,11 @@ class DeepSeekMoELayer(nn.Module):
         # ── Routed Experts ──
         hidden_states_flat = hidden_states.view(-1, hidden_size)  # [B*S, H]
 
-        if self.config.routing_mode == "expert_choice":
-            # Expert-choice: each expert picks its top-c tokens
-            routed_output_flat, topk_idx, topk_weight = self._dispatch_expert_choice(
-                hidden_states_flat
-            )
-            # Also get router logits for z-loss / mi-loss
-            router_logits = self.router.gate(hidden_states_flat)
-        else:
-            # Token-choice (default): each token picks top-k experts
-            topk_idx, topk_weight, router_logits = self.router(hidden_states)
-            routed_output_flat = self._dispatch_token_choice(
-                hidden_states_flat, topk_idx, topk_weight
-            )
+        # Each token picks top-k experts
+        topk_idx, topk_weight, router_logits = self.router(hidden_states)
+        routed_output_flat = self._dispatch_token_choice(
+            hidden_states_flat, topk_idx, topk_weight
+        )
 
         # Cache for auxiliary loss computation
         self._router_logits = router_logits
@@ -761,20 +647,5 @@ if __name__ == "__main__":
     stats = moe3.get_routing_stats()
     print(f"  Expert counts: {stats['expert_counts'].int().tolist()}")
     print(f"  Load std: {stats['load_std'].item():.4f}")
-
-    # ── Test 4: Expert-Choice Routing ──
-    print("\n[Test 4] Expert-choice routing")
-    config4 = DeepSeekMoEConfig(
-        hidden_size=768,
-        intermediate_size=3072,
-        num_shared_experts=2,
-        num_routed_experts=8,
-        num_experts_per_tok=2,
-        routing_mode="expert_choice",
-        capacity_factor=1.0,
-    )
-    moe4 = DeepSeekMoELayer(config4)
-    out4 = moe4(x, modality_indices)
-    print(f"  Input:  {x.shape}  →  Output: {out4.shape}")
 
     print("\n✓ All tests passed!")

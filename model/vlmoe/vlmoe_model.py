@@ -245,6 +245,14 @@ class VLMoEModel(nn.Module):
             num_shared_experts=config.num_shared_experts,
             num_routed_experts=config.num_routed_experts,
             num_experts_per_tok=config.num_experts_per_tok,
+            # ── NEW ──
+            routing_mode=config.routing_mode,
+            capacity_factor=config.capacity_factor,
+            drop_tokens=config.drop_tokens,
+            min_capacity=config.min_capacity,
+            use_aux_free_balancing=config.use_aux_free_balancing,
+            aux_free_bias_update_rate=config.aux_free_bias_update_rate,
+            # ─────────
             load_balance_weight=config.load_balance_weight,
             z_loss_weight=config.z_loss_weight,
             mi_loss_weight=config.mi_loss_weight,
