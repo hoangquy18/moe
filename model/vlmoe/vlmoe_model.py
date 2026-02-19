@@ -82,6 +82,16 @@ class VLMoEConfig:
     moe_intermediate_size: int = 3072
     num_moe_layers: int = 6
 
+    # Expert Capacity (token dropping)
+    # 0.0 = no limit, 1.25 = allow 25% overflow per expert
+    capacity_factor: float = 0.0
+    drop_tokens: bool = True
+    min_capacity: int = 4
+
+    # Auxiliary-Free Load Balancing (DeepSeek-V3)
+    use_aux_free_balancing: bool = False
+    aux_free_bias_update_rate: float = 0.001
+
     # Loss weights
     load_balance_weight: float = 0.01
     z_loss_weight: float = 0.001
@@ -245,14 +255,11 @@ class VLMoEModel(nn.Module):
             num_shared_experts=config.num_shared_experts,
             num_routed_experts=config.num_routed_experts,
             num_experts_per_tok=config.num_experts_per_tok,
-            # ── NEW ──
-            routing_mode=config.routing_mode,
             capacity_factor=config.capacity_factor,
             drop_tokens=config.drop_tokens,
             min_capacity=config.min_capacity,
             use_aux_free_balancing=config.use_aux_free_balancing,
             aux_free_bias_update_rate=config.aux_free_bias_update_rate,
-            # ─────────
             load_balance_weight=config.load_balance_weight,
             z_loss_weight=config.z_loss_weight,
             mi_loss_weight=config.mi_loss_weight,
