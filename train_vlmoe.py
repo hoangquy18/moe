@@ -224,6 +224,7 @@ class VLMoETrainer:
             "load_balance_loss": 0.0,
             "z_loss": 0.0,
             "mi_loss": 0.0,
+            "budget_loss": 0.0,
         }
         num_batches = len(self.train_loader)
         start_time = time.time()
@@ -290,18 +291,22 @@ class VLMoETrainer:
             epoch_stats["load_balance_loss"] += outputs["load_balance_loss"].item()
             epoch_stats["z_loss"] += outputs["z_loss"].item()
             epoch_stats["mi_loss"] += outputs["mi_loss"].item()
+            epoch_stats["budget_loss"] += outputs["budget_loss"].item()
 
             # Log
             if batch_idx % self.config.log_every == 0:
                 lr = self.scheduler.get_last_lr()[0]
-                logger.info(
+                log_msg = (
                     f"Step {batch_idx}/{num_batches}: "
                     f"Loss={batch_loss:.4f}, "
                     f"Task={outputs['task_loss'].item():.4f}, "
                     f"LB={outputs['load_balance_loss'].item():.4f}, "
                     f"Z={outputs['z_loss'].item():.4f}, "
-                    f"LR={lr:.2e}"
                 )
+                if outputs["budget_loss"].item() > 0:
+                    log_msg += f"Budget={outputs['budget_loss'].item():.4f}, "
+                log_msg += f"LR={lr:.2e}"
+                logger.info(log_msg)
 
             progress_bar.set_postfix(
                 {

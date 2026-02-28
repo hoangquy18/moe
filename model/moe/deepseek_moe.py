@@ -51,6 +51,17 @@ class DeepSeekMoEConfig:
     routed_scaling_factor: float = 1.0
     scoring_func: str = "softmax"  # "softmax" | "sigmoid"
 
+    # ── Dynamic-k Routing (top-k with threshold extension) ────────────────────
+    # When dynamic_k=True, each token picks at least dynamic_k_min experts,
+    # then extends up to dynamic_k_max if extra experts score above threshold.
+    # num_experts_per_tok is ignored when dynamic_k=True.
+    dynamic_k: bool = False
+    dynamic_k_min: int = 1
+    dynamic_k_max: int = 4
+    dynamic_k_threshold: float = 0.1
+    budget_loss_weight: float = 0.01
+    budget_loss_target: float = 2.0
+
     # ── Expert Capacity (token dropping) ──────────────────────────────────────
     # capacity_factor = 0.0 → no limit (default, backward-compatible)
     # capacity_factor = 1.25 → each expert handles at most 25% extra tokens
@@ -119,6 +130,12 @@ class DeepSeekRouter(nn.Module):
         self.top_k = config.num_experts_per_tok
         self.num_experts = config.num_routed_experts
 
+        # Dynamic-k parameters
+        self.dynamic_k = config.dynamic_k
+        self.dynamic_k_min = config.dynamic_k_min
+        self.dynamic_k_max = config.dynamic_k_max
+        self.dynamic_k_threshold = config.dynamic_k_threshold
+
         # Router linear layer (no bias — logit bias handled separately)
         self.gate = nn.Linear(config.hidden_size, config.num_routed_experts, bias=False)
         nn.init.kaiming_uniform_(self.gate.weight, a=math.sqrt(5))
@@ -142,8 +159,9 @@ class DeepSeekRouter(nn.Module):
             hidden_states: [batch_size, seq_len, hidden_size]
 
         Returns:
-            topk_idx:     [B*S, top_k] — indices of selected experts
-            topk_weight:  [B*S, top_k] — weights for selected experts (no bias)
+            topk_idx:     [B*S, K] — indices of selected experts (K = top_k or max_k)
+            topk_weight:  [B*S, K] — weights for selected experts (no bias).
+                          In dynamic-k mode, unused slots have weight=0.
             router_logits:[B*S, num_experts] — raw logits for aux loss computation
         """
         batch_size, seq_len, hidden_size = hidden_states.shape
@@ -157,54 +175,74 @@ class DeepSeekRouter(nn.Module):
 
         # Selection scores (with bias for aux-free balancing)
         if self.config.use_aux_free_balancing:
-            # Bias shifts selection toward underloaded experts.
-            # The bias does NOT affect final token weights — only expert selection.
             selection_scores = routing_scores + self.expert_bias.unsqueeze(0)
         else:
             selection_scores = routing_scores
 
-        # Top-k selection
-        _, topk_idx = torch.topk(selection_scores, k=self.top_k, dim=-1)  # [B*S, top_k]
+        if self.dynamic_k:
+            # ── Dynamic-k: pick min_k guaranteed, extend up to max_k by threshold ──
+            k = self.dynamic_k_max
+            _, topk_idx = torch.topk(selection_scores, k=k, dim=-1)  # [B*S, max_k]
+            topk_weight = routing_scores.gather(-1, topk_idx)        # [B*S, max_k]
 
-        # Gather actual weights at selected positions (unbiased)
-        topk_weight = routing_scores.gather(-1, topk_idx)  # [B*S, top_k]
+            # Zero out extra slots (beyond min_k) that fall below threshold
+            if self.dynamic_k_min < self.dynamic_k_max:
+                extra_mask = torch.zeros_like(topk_weight, dtype=torch.bool)
+                extra_mask[:, self.dynamic_k_min:] = (
+                    topk_weight[:, self.dynamic_k_min:] < self.dynamic_k_threshold
+                )
+                topk_weight = topk_weight.masked_fill(extra_mask, 0.0)
 
-        # Normalize weights to sum to 1 per token
-        topk_weight = topk_weight / (topk_weight.sum(dim=-1, keepdim=True) + 1e-8)
+            # Normalize over active (non-zero) weights only
+            weight_sum = topk_weight.sum(dim=-1, keepdim=True) + 1e-8
+            topk_weight = topk_weight / weight_sum
+        else:
+            # ── Fixed top-k (original behavior) ──
+            _, topk_idx = torch.topk(selection_scores, k=self.top_k, dim=-1)
+            topk_weight = routing_scores.gather(-1, topk_idx)
+            topk_weight = topk_weight / (topk_weight.sum(dim=-1, keepdim=True) + 1e-8)
 
         # Apply scaling factor
         topk_weight = topk_weight * self.config.routed_scaling_factor
 
         # Update expert bias during training (no gradient)
         if self.config.use_aux_free_balancing and self.training:
-            self._update_expert_bias(topk_idx)
+            self._update_expert_bias(topk_idx, topk_weight)
 
         return topk_idx, topk_weight, router_logits
 
     @torch.no_grad()
-    def _update_expert_bias(self, topk_idx: torch.Tensor) -> None:
+    def _update_expert_bias(
+        self, topk_idx: torch.Tensor, topk_weight: torch.Tensor
+    ) -> None:
         """
         Update per-expert bias based on observed token load (DeepSeek-V3).
 
         Rule:  b_i ← b_i + γ · sign(target_load − actual_load)
 
-        - Overloaded  experts: bias decreases → less likely to be selected next step
-        - Underloaded experts: bias increases → more likely to be selected next step
-
-        This is a running heuristic, NOT a gradient update.
+        In dynamic-k mode, only count slots with non-zero weight as active
+        assignments, and derive target_load from actual active slot count
+        rather than the fixed top_k.
         """
         num_tokens = topk_idx.shape[0]
 
-        # Vectorized token count per expert using bincount
-        expert_counts = torch.bincount(
-            topk_idx.reshape(-1),
-            minlength=self.num_experts,
-        ).float()  # [num_experts]
+        if self.dynamic_k:
+            # Only count active (non-zero weight) assignments
+            active_mask = topk_weight > 0
+            active_indices = topk_idx[active_mask]
+            total_active = active_indices.numel()
+            expert_counts = torch.bincount(
+                active_indices.reshape(-1),
+                minlength=self.num_experts,
+            ).float()
+            target_load = total_active / self.num_experts
+        else:
+            expert_counts = torch.bincount(
+                topk_idx.reshape(-1),
+                minlength=self.num_experts,
+            ).float()
+            target_load = (num_tokens * self.top_k) / self.num_experts
 
-        # Ideal uniform load
-        target_load = (num_tokens * self.top_k) / self.num_experts
-
-        # Update: sign gives -1 (overloaded) or +1 (underloaded) or 0 (balanced)
         self.expert_bias.add_(
             self.config.aux_free_bias_update_rate
             * torch.sign(target_load - expert_counts)
@@ -272,6 +310,7 @@ class DeepSeekMoELayer(nn.Module):
         self._routing_weights: Optional[torch.Tensor] = None
         self._topk_indices: Optional[torch.Tensor] = None
         self._modality_indices: Optional[torch.Tensor] = None
+        self._num_active_experts: Optional[torch.Tensor] = None
 
     # ──────────────────────────────────────────────────────────────────────────
     # Expert Dispatch
@@ -399,6 +438,8 @@ class DeepSeekMoELayer(nn.Module):
         self._router_logits = router_logits
         self._routing_weights = topk_weight
         self._topk_indices = topk_idx
+        # Per-token count of active experts (non-zero weight slots)
+        self._num_active_experts = (topk_weight > 0).sum(dim=-1).float()
 
         # Reshape routed output
         routed_output = routed_output_flat.view(batch_size, seq_len, hidden_size)
@@ -536,12 +577,37 @@ class DeepSeekMoELayer(nn.Module):
 
         return mi_loss * self.config.mi_loss_weight
 
+    def compute_budget_loss(self) -> torch.Tensor:
+        """
+        Budget loss for dynamic-k routing.
+
+        L_budget = weight * (avg_experts_used - target)^2
+
+        Penalizes deviation of the average number of active experts per token
+        from budget_loss_target. Prevents collapse to min_k or max_k.
+        Returns 0 when dynamic_k is disabled.
+        """
+        if not self.config.dynamic_k:
+            return torch.tensor(0.0, device=self._router_logits.device
+                                if self._router_logits is not None
+                                else "cpu")
+
+        if self._num_active_experts is None:
+            return torch.tensor(0.0)
+
+        avg_experts = self._num_active_experts.mean()
+        target = self.config.budget_loss_target
+        budget_loss = (avg_experts - target) ** 2
+
+        return budget_loss * self.config.budget_loss_weight
+
     def get_aux_losses(self) -> Dict[str, torch.Tensor]:
         """Return all auxiliary losses as a dict."""
         return {
             "load_balance_loss": self.compute_load_balance_loss(),
             "z_loss": self.compute_z_loss(),
             "mi_loss": self.compute_mi_loss(),
+            "budget_loss": self.compute_budget_loss(),
         }
 
     def get_routing_stats(self) -> Dict[str, torch.Tensor]:
@@ -560,15 +626,22 @@ class DeepSeekMoELayer(nn.Module):
             self._topk_indices.reshape(-1), minlength=num_experts
         ).float()
 
-        return {
+        stats = {
             "expert_counts": expert_counts,
             "expert_load_fraction": expert_counts
-            / (num_tokens * self.config.num_experts_per_tok),
+            / (num_tokens * self.config.num_experts_per_tok + 1e-8),
             "load_std": expert_counts.std(),
             "load_max": expert_counts.max(),
             "load_min": expert_counts.min(),
             "expert_bias": self.router.get_expert_bias(),
         }
+
+        if self.config.dynamic_k and self._num_active_experts is not None:
+            stats["avg_experts_per_token"] = self._num_active_experts.mean()
+            stats["min_experts_per_token"] = self._num_active_experts.min()
+            stats["max_experts_per_token"] = self._num_active_experts.max()
+
+        return stats
 
 
 if __name__ == "__main__":
@@ -647,5 +720,37 @@ if __name__ == "__main__":
     stats = moe3.get_routing_stats()
     print(f"  Expert counts: {stats['expert_counts'].int().tolist()}")
     print(f"  Load std: {stats['load_std'].item():.4f}")
+
+    # ── Test 4: Dynamic-k Routing ──
+    print("\n[Test 4] Dynamic-k routing (min=1, max=4, threshold=0.1)")
+    config4 = DeepSeekMoEConfig(
+        hidden_size=768,
+        intermediate_size=3072,
+        num_shared_experts=2,
+        num_routed_experts=8,
+        dynamic_k=True,
+        dynamic_k_min=1,
+        dynamic_k_max=4,
+        dynamic_k_threshold=0.1,
+        budget_loss_weight=0.01,
+        budget_loss_target=2.0,
+        mi_loss_weight=0.01,
+    )
+    moe4 = DeepSeekMoELayer(config4)
+    out4 = moe4(x, modality_indices)
+    print(f"  Input:  {x.shape}  →  Output: {out4.shape}")
+    losses4 = moe4.get_aux_losses()
+    for k, v in losses4.items():
+        print(f"  {k}: {v.item():.6f}")
+    stats4 = moe4.get_routing_stats()
+    print(f"  Avg experts/token: {stats4['avg_experts_per_token'].item():.2f}")
+    print(f"  Min experts/token: {stats4['min_experts_per_token'].item():.0f}")
+    print(f"  Max experts/token: {stats4['max_experts_per_token'].item():.0f}")
+    avg_k = stats4["avg_experts_per_token"].item()
+    assert config4.dynamic_k_min <= avg_k <= config4.dynamic_k_max, (
+        f"avg_k={avg_k} out of [{config4.dynamic_k_min}, {config4.dynamic_k_max}]"
+    )
+    assert losses4["budget_loss"].item() >= 0, "budget_loss should be non-negative"
+    print("  ✓ Dynamic-k assertions passed")
 
     print("\n✓ All tests passed!")

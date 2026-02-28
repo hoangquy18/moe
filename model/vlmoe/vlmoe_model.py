@@ -88,6 +88,12 @@ class VLMoEConfig:
     drop_tokens: bool = True
     min_capacity: int = 4
 
+    # Dynamic-k Routing
+    dynamic_k: bool = False
+    dynamic_k_min: int = 1
+    dynamic_k_max: int = 4
+    dynamic_k_threshold: float = 0.1
+
     # Auxiliary-Free Load Balancing (DeepSeek-V3)
     use_aux_free_balancing: bool = False
     aux_free_bias_update_rate: float = 0.001
@@ -96,6 +102,8 @@ class VLMoEConfig:
     load_balance_weight: float = 0.01
     z_loss_weight: float = 0.001
     mi_loss_weight: float = 0.0
+    budget_loss_weight: float = 0.01
+    budget_loss_target: float = 2.0
 
     # Training
     dropout: float = 0.1
@@ -255,6 +263,12 @@ class VLMoEModel(nn.Module):
             num_shared_experts=config.num_shared_experts,
             num_routed_experts=config.num_routed_experts,
             num_experts_per_tok=config.num_experts_per_tok,
+            dynamic_k=config.dynamic_k,
+            dynamic_k_min=config.dynamic_k_min,
+            dynamic_k_max=config.dynamic_k_max,
+            dynamic_k_threshold=config.dynamic_k_threshold,
+            budget_loss_weight=config.budget_loss_weight,
+            budget_loss_target=config.budget_loss_target,
             capacity_factor=config.capacity_factor,
             drop_tokens=config.drop_tokens,
             min_capacity=config.min_capacity,
@@ -457,13 +471,15 @@ class VLMoEModel(nn.Module):
                 text_features = self.text_head(text_features)
 
             # Aggregate aux losses
+            num_layers = len(all_aux_losses)
             load_balance_loss = sum(
                 aux["load_balance_loss"] for aux in all_aux_losses
-            ) / len(all_aux_losses)
-            z_loss = sum(aux["z_loss"] for aux in all_aux_losses) / len(all_aux_losses)
-            mi_loss = sum(aux["mi_loss"] for aux in all_aux_losses) / len(
-                all_aux_losses
-            )
+            ) / num_layers
+            z_loss = sum(aux["z_loss"] for aux in all_aux_losses) / num_layers
+            mi_loss = sum(aux["mi_loss"] for aux in all_aux_losses) / num_layers
+            budget_loss = sum(
+                aux["budget_loss"] for aux in all_aux_losses
+            ) / num_layers
 
         else:
             # Original mm_encoder.py style (no MoE)
@@ -473,6 +489,7 @@ class VLMoEModel(nn.Module):
             load_balance_loss = torch.tensor(0.0, device=device)
             z_loss = torch.tensor(0.0, device=device)
             mi_loss = torch.tensor(0.0, device=device)
+            budget_loss = torch.tensor(0.0, device=device)
 
         # ==================== Normalize and Compute Loss ====================
         visual_features = F.normalize(visual_features, dim=-1)
@@ -489,7 +506,7 @@ class VLMoEModel(nn.Module):
             + F.cross_entropy(logits_per_text, contrastive_labels)
         ) / 2
 
-        total_loss = task_loss + load_balance_loss + z_loss
+        total_loss = task_loss + load_balance_loss + z_loss + budget_loss
 
         if return_dict:
             return {
@@ -498,6 +515,7 @@ class VLMoEModel(nn.Module):
                 "load_balance_loss": load_balance_loss,
                 "z_loss": z_loss,
                 "mi_loss": mi_loss,
+                "budget_loss": budget_loss,
                 "logits": logits_per_image,
                 "visual_features": visual_features,
                 "text_features": text_features,
